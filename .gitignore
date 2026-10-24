@@ -1,0 +1,35 @@
+bin/
+obj/
+*.pdb
+settings.json
+plan.json
+state.json
+logs/
+shots/
+.env
+.env.*
+*.local
+*.user
+.vs/
+TestResults/
+*.binlog
+artifacts/
+publish/
+*.zip
+*.sha256
+*.bak
+.idea/
+.DS_Store
+# 本机跨会话交接记录可能含诊断路径与临时状态，不进入公开仓库。
+HANDOFF.md
+
+# 本机自检资料：保留在工作区，不进入公开仓库。
+/功能列表.md
+/功能列表/
+/任务进展.md
+/任务进展/
+# 项目级 AI 会话永久记忆,仅本机使用。
+/CLAUDE.md
+
+# 含游戏账号 UID 的本机分辨率校准截图，仅用于 OCR/锚点自检。
+/1k截图/

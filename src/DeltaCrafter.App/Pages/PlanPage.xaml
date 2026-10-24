@@ -1,0 +1,127 @@
+<Page
+    x:Class="DeltaCrafter.App.Pages.PlanPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:DeltaCrafter.App.Controls">
+
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+        <!-- 内容列居中用星号三列确定性实现:两侧等分剩余宽度,中列吃满并封顶。
+             不依赖 Stretch+MaxWidth 的对齐退化(实测 125% 缩放全屏下会偏右)。 -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="999*" MaxWidth="{StaticResource TokenContentMaxWidth}" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="1" Padding="{StaticResource TokenPagePadding}"
+                        Spacing="{StaticResource TokenGapL}">
+
+                <controls:PageHeader Title="制造计划"
+                                     Subtitle="分别设置每个设施的制造模式与物品。所有修改即时自动保存。" />
+
+                <!-- 利润模式横幅:亮明哪些卡片会被自动接管及最近一次推荐结论(含失败原因)。 -->
+                <InfoBar IsOpen="{x:Bind Vm.IsProfitMode, Mode=OneWay}"
+                         Severity="Informational" IsClosable="False"
+                         Title="{x:Bind Vm.ProfitBannerTitle, Mode=OneWay}"
+                         Message="{x:Bind Vm.ProfitBannerMessage, Mode=OneWay}" />
+
+                <!-- 全局循环设置 -->
+                <Border Style="{StaticResource CardBorderStyle}">
+                    <StackPanel Spacing="16">
+                        <Grid>
+                            <StackPanel Grid.Column="0" Spacing="2">
+                                <TextBlock Text="自动循环" Style="{StaticResource CardTitleTextStyle}" />
+                                <TextBlock Text="开启后,到达计划时间自动上号收取并续造。"
+                                           Style="{StaticResource SecondaryTextStyle}" />
+                            </StackPanel>
+                            <ToggleSwitch HorizontalAlignment="Right"
+                                          IsOn="{x:Bind Vm.AutoLoopEnabled, Mode=TwoWay}" />
+                        </Grid>
+                        <Grid>
+                            <StackPanel Grid.Column="0" Spacing="2">
+                                <TextBlock Text="材料不足时自动一键补齐" Style="{StaticResource CardTitleTextStyle}" />
+                                <TextBlock Text="自动购买缺料后开工(消耗游戏币,金额随交易行波动)。关闭则缺料设施标记需人工。"
+                                           Style="{StaticResource SecondaryTextStyle}" />
+                            </StackPanel>
+                            <ToggleSwitch HorizontalAlignment="Right"
+                                          IsOn="{x:Bind Vm.AutoReplenishMaterials, Mode=TwoWay}" />
+                        </Grid>
+                        <Grid>
+                            <StackPanel Grid.Column="0" Spacing="2">
+                                <TextBlock Text="执行缓冲(秒)" Style="{StaticResource CardTitleTextStyle}" />
+                                <TextBlock Text="在游戏显示的完成时刻之后追加的等待,吸收识别与结算误差。"
+                                           Style="{StaticResource SecondaryTextStyle}" />
+                            </StackPanel>
+                            <NumberBox HorizontalAlignment="Right" Width="140"
+                                       SpinButtonPlacementMode="Inline"
+                                       Minimum="0" Maximum="3600" SmallChange="15"
+                                       Value="{x:Bind Vm.RunBufferSeconds, Mode=TwoWay}" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- 各设施配置:2×2 网格,顺序与游戏特勤处一致(左上技术中心、右上工作台、
+                     左下制药台、右下防具台,由 PlanViewModel.DisplayOrder 保证)。 -->
+                <!-- 本模板内必须用经典 Binding、不得用 x:Bind:ItemsRepeater 对含 x:Bind 的
+                     模板走编译绑定通道,不给控件设置 DataContext,而搜索框事件与回显
+                     (PlanPage.xaml.cs)全部经 DataContext 取模型——混用会静默失灵(实测:
+                     聚焦不展开、键入不过滤、已存物品名不回填)。 -->
+                <ItemsRepeater ItemsSource="{x:Bind Vm.Facilities}">
+                    <ItemsRepeater.Layout>
+                        <UniformGridLayout Orientation="Horizontal"
+                                           MaximumRowsOrColumns="2" ItemsStretch="Fill"
+                                           MinItemWidth="380"
+                                           MinColumnSpacing="16" MinRowSpacing="16" />
+                    </ItemsRepeater.Layout>
+                    <ItemsRepeater.ItemTemplate>
+                        <DataTemplate>
+                            <Border Style="{StaticResource CardBorderStyle}">
+                                <StackPanel Spacing="12">
+                                    <Grid ColumnSpacing="12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding Name}"
+                                                   Style="{StaticResource CardTitleTextStyle}"
+                                                   VerticalAlignment="Center" />
+                                        <!-- 模式紧邻启用开关且位于其左侧,保持每张设施卡的控制归属清楚。 -->
+                                        <ComboBox Grid.Column="1"
+                                                  MinWidth="150"
+                                                  HorizontalAlignment="Right"
+                                                  SelectedIndex="{Binding ModeIndex, Mode=TwoWay}"
+                                                  AutomationProperties.Name="制造模式">
+                                            <ComboBoxItem Content="自定义物品" />
+                                            <ComboBoxItem Content="每小时利润最高" />
+                                            <ComboBoxItem Content="总利润最高" />
+                                        </ComboBox>
+                                        <ToggleSwitch Grid.Column="2"
+                                                      HorizontalAlignment="Right"
+                                                      OnContent="启用" OffContent="停用"
+                                                      IsOn="{Binding Enabled, Mode=TwoWay}" />
+                                    </Grid>
+                                    <!-- 搜索式选择:键入即过滤(大小写无关、×/x 等价),聚焦展开全部候选。
+                                         写入与回显走事件显式处理(即改即存),见 PlanPage.xaml.cs。
+                                         回显挂 DataContextChanged 而非 Loaded:ItemsRepeater 复用控件时
+                                         必须立即回填,否则残留文本会在失焦时写进别的设施。 -->
+                                    <AutoSuggestBox Header="制造物品"
+                                                    PlaceholderText="输入关键字搜索,如 AP / 9×19;回车确认"
+                                                    QueryIcon="Find"
+                                                    HorizontalAlignment="Stretch"
+                                                    IsEnabled="{Binding ItemEditable}"
+                                                    DataContextChanged="OnItemBoxDataContextChanged"
+                                                    GotFocus="OnItemBoxGotFocus"
+                                                    LostFocus="OnItemBoxLostFocus"
+                                                    TextChanged="OnItemTextChanged"
+                                                    QuerySubmitted="OnItemQuerySubmitted" />
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsRepeater.ItemTemplate>
+                </ItemsRepeater>
+
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
+</Page>
