@@ -13,7 +13,7 @@
 > `main` 分支已包含尚未重新打包为 Release 的后续修复：确认弹窗与动态特勤处入口、配方标题 OCR 噪声、
 > 完成态槽位补位、槽位计时读数归一化与部分观察、购买金额按钮、**收取时间随机化**
 > （倒计时结束后 1–5 分钟随机领取，且预启动不早于完成时刻），以及**未知界面 ESC 恢复**
-> （邮件/通知页等无法识别的画面最多按 6 次 ESC 尝试退回大厅）。详见 `CHANGELOG.md` 的 Unreleased 小节。
+> （邮件/通知页等无法识别的画面最多按 1 次 ESC；仍认不出则自动执行暂停 2 小时）。详见 `CHANGELOG.md` 的 Unreleased 小节。
 > 下载区的 `v0.4.0-fix.1` 仍是 2026-10-24 的构建。
 
 ## 修复效果
@@ -93,3 +93,4 @@ pwsh -File scripts/Test-ReleasePrivacy.ps1 -Mode Package -Path artifacts/DeltaCr
 ## 许可
 
 源码沿用 [MIT](LICENSE)。第三方组件声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) 与 `licenses/`。本仓库公开内容仅包括源码、测试、默认资源和文档；发布附件仅包含运行所需程序文件、默认资源和许可。
+

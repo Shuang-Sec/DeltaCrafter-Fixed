@@ -91,6 +91,8 @@ public sealed partial class AutomationCoordinator : IDisposable
     /// <summary>提前量:到点前这么多秒检查游戏是否已开,未开则预启动到大厅,
     /// 把启动器/登录/加载耗时消化在等待期里,到点即可直接收取。</summary>
     private const int PrewarmLeadSeconds = 120;
+    /// <summary>未知画面按过一次 ESC 仍认不出时，自动执行暂停的分钟数。</summary>
+    internal const int UnknownScreenPauseMinutes = 120;
     private DateTimeOffset? _prewarmedFor;
 
     /// <summary>执行闸门:更新下载/安装期间置位,拒绝一切新触发(自动调度、预启动、
@@ -566,7 +568,17 @@ public sealed partial class AutomationCoordinator : IDisposable
             report.AddFailure(ex.Message);
             _log.Error(ex, "[{Trigger}]执行失败。", trigger);
             if (affectsSchedule)
-                _engine.MarkRunFinished(report.Summary(), failed: true, _settings().FailureRetryMinutes);
+            {
+                // 未知界面（对局、邮件页等）不是普通失败：用户要求这种情况下暂停两小时，
+                // 不要每 30 分钟把游戏拉起来一次。
+                int retryMinutes = ex is UnknownScreenStuckException
+                    ? UnknownScreenPauseMinutes
+                    : _settings().FailureRetryMinutes;
+                _engine.MarkRunFinished(report.Summary(), failed: true, retryMinutes);
+                if (retryMinutes != _settings().FailureRetryMinutes)
+                    _log.Warning("[{Trigger}]界面无法识别，自动执行暂停 {Minutes} 分钟。",
+                        trigger, retryMinutes);
+            }
             NotifySafely("特勤处执行失败", ex.Message);
             // 故意不关游戏:保留失败现场供人工检查。
             Publish(new CoordinatorStatus(EngineMode.Faulted, ex.Message,

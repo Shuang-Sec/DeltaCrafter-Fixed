@@ -267,6 +267,27 @@ public sealed class DeepScheduleAuditTests : IDisposable
     }
 
     [Fact]
+    public async Task Unknown_screen_stuck_pauses_automatic_runs_for_two_hours()
+    {
+        // 对局/邮件页这类认不出的界面：按过一次 ESC 仍回不到大厅时，不能每 30 分钟去拉一次游戏。
+        var report = await Execute((_, _) => throw new UnknownScreenStuckException(
+            "等待大厅", "第 1 次 ESC 后仍无法识别", null, null));
+
+        Assert.True(report.HasFailure);
+        Assert.True(_engine.State.LastRunFailed);
+        Assert.Equal(_clock.Now.AddMinutes(AutomationCoordinator.UnknownScreenPauseMinutes),
+            _engine.State.FailureBackoffUntil);
+    }
+
+    [Fact]
+    public async Task Ordinary_failure_still_uses_the_configured_backoff()
+    {
+        _settings.FailureRetryMinutes = 30;
+        await Execute((_, _) => throw new StepFailedException("深度测试步骤", "普通失败"));
+        Assert.Equal(_clock.Now.AddMinutes(30), _engine.State.FailureBackoffUntil);
+    }
+
+    [Fact]
     public void Stopping_while_idle_also_prevents_an_automatic_prewarm()
     {
         _engine.RecordObservation(FacilityKey.Workbench, FacilityPhase.Crafting, "跨日制造", _clock.Now.AddSeconds(30), null);

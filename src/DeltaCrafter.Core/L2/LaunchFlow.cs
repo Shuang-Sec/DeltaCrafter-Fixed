@@ -7,6 +7,14 @@ namespace DeltaCrafter.Core.L2;
 public sealed record LaunchOutcome(nint Hwnd, bool LaunchedByUs);
 
 /// <summary>
+/// 未知画面按过一次 ESC 后仍未回到大厅。与普通步骤失败区分开：这说明游戏停在
+/// 对局、邮件或别的本机页面，自动执行要暂停两小时，不能每 30 分钟去拉一次游戏。
+/// </summary>
+internal sealed class UnknownScreenStuckException(string stepName, string message,
+    string? screenshotPath, string? ocrDump)
+    : StepFailedException(stepName, message, screenshotPath, ocrDump);
+
+/// <summary>
 /// 「确保游戏就绪并到达大厅」流程。游戏必须经启动器启动,完整链:
 /// 启动器(OCR 找「开始游戏」点击)→ 游戏客户端(16:9 大窗,与启动器同名以比例区分)→
 /// 模式选择(点烽火地带)→ 3D 基地(Tab)→ 大厅。仅识别到公告或生产页时发送 ESC；未知画面只等待。
@@ -14,8 +22,11 @@ public sealed record LaunchOutcome(nint Hwnd, bool LaunchedByUs);
 public sealed class LaunchFlow
 {
     private const int MaxNetworkReconnectAttempts = 5;
-    /// <summary>未知画面最多尝试的 ESC 次数。用尽后回到“只等待”，绝不在未知画面上无限按键。</summary>
-    internal const int MaxUnknownEscapes = 6;
+    /// <summary>
+    /// 未知画面最多尝试的 ESC 次数。用户要求“最多一次”：对局里 ESC 会打开暂停菜单，
+    /// 按一次没回到已知页面就不要再按，交给上层暂停两小时。
+    /// </summary>
+    internal const int MaxUnknownEscapes = 1;
     private static readonly TimeSpan NetworkReconnectWait = TimeSpan.FromSeconds(8);
     internal const string CollectionMenuScreen = "collection-menu";
     internal static readonly string[] KnownScreens =
@@ -133,9 +144,9 @@ public sealed class LaunchFlow
                 action = LobbyAction.ConfirmNetworkReconnect;
                 break;
             default:
-                // 未知画面：邮件/交易行通知、加载中、对局内等。用户要求“遇到没记录的界面先点几次 ESC
-                // 试试”，因此这里有限次发送 ESC 尝试退回大厅；次数用尽后回到“只等待”，
-                // 避免在真正的对局里反复弹出/关闭暂停菜单，也绝不在未知画面上无限按键。
+                // 未知画面：邮件/交易行通知、加载中、对局内等。用户要求“最多一次 ESC”：
+                // 对局里 ESC 只会打开暂停菜单，按一次没回到已知页面就不要再按，
+                // 交给上层暂停两小时，避免反复拉起游戏打断用户。
                 if (state.UnknownEscs >= MaxUnknownEscapes) return LobbyAction.Wait;
                 state.UnknownEscs++;
                 action = LobbyAction.EscapeUnknown;
@@ -533,8 +544,12 @@ public sealed class LaunchFlow
         }
 
         var (png, dump) = await _probe.DumpAsync(hwnd, "fail-等待大厅");
-        throw new StepFailedException("等待大厅",
-            $"{s.LobbyTimeoutSeconds}s 内未到达大厅；已尝试 {navigation.UnknownEscs} 次 ESC 仍未回到大厅，" +
-            $"请确认游戏当前界面后再执行。诊断截图:{png}", png, dump);
+        string message = navigation.UnknownEscs > 0
+            ? $"{s.LobbyTimeoutSeconds}s 内未到达大厅；已按 {navigation.UnknownEscs} 次 ESC 仍无法回到已知页面，" +
+              "自动执行将暂停两小时。诊断截图:" + png
+            : $"{s.LobbyTimeoutSeconds}s 内未到达大厅；请确认游戏当前界面后再执行。诊断截图:{png}";
+        if (navigation.UnknownEscs > 0)
+            throw new UnknownScreenStuckException("等待大厅", message, png, dump);
+        throw new StepFailedException("等待大厅", message, png, dump);
     }
 }

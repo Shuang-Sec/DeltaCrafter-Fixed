@@ -82,8 +82,9 @@ public sealed class LaunchNavigationGuardTests
     [Theory]
     [InlineData(null)]
     [InlineData("unrecognized-match-or-disconnect")]
-    public void Unknown_screens_get_a_bounded_number_of_escape_attempts_then_only_wait(string? screen)
+    public void Unknown_screens_get_at_most_one_escape_then_only_wait(string? screen)
     {
+        Assert.Equal(1, LaunchFlow.MaxUnknownEscapes);
         int escapes = 0;
         var state = new LaunchFlow.LobbyNavigationState();
         for (int pass = 0; pass < LaunchFlow.MaxUnknownEscapes; pass++)
