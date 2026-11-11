@@ -24,6 +24,10 @@ public class SlotTimerCanonicalizerTests
     [InlineData("0058：09", "0:58:09")]
     [InlineData("00：57：50", "0:57:50")]
     [InlineData(" 00 : 57 : 50 ", "0:57:50")]
+    [InlineData("002257", "0:22:57")] // 2026-11-11 防具台实测：两个分隔符全丢
+    [InlineData("0a21：18", "0:21:18")] // 2026-11-11 防具台实测：0 与冒号粘成「a」
+    [InlineData("013652", "1:36:52")]
+    [InlineData("021024", "2:10:24")]
     public void Observed_slot_timer_noise_folds_into_a_complete_countdown(string raw, string expected)
     {
         Assert.True(SlotTimerCanonicalizer.TryCanonicalize(raw, out string canonical));
@@ -35,7 +39,6 @@ public class SlotTimerCanonicalizerTests
     [InlineData("   ")]
     [InlineData("07：511")]
     [InlineData("01：227")]
-    [InlineData("021024")]
     [InlineData("902:10:24")]
     [InlineData("0J58：09：01")]
     [InlineData("00：6l：09")]

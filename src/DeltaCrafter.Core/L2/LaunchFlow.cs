@@ -14,6 +14,8 @@ public sealed record LaunchOutcome(nint Hwnd, bool LaunchedByUs);
 public sealed class LaunchFlow
 {
     private const int MaxNetworkReconnectAttempts = 5;
+    /// <summary>未知画面最多尝试的 ESC 次数。用尽后回到“只等待”，绝不在未知画面上无限按键。</summary>
+    internal const int MaxUnknownEscapes = 6;
     private static readonly TimeSpan NetworkReconnectWait = TimeSpan.FromSeconds(8);
     internal const string CollectionMenuScreen = "collection-menu";
     internal static readonly string[] KnownScreens =
@@ -30,7 +32,7 @@ public sealed class LaunchFlow
     private long? _lastNetworkRestartAt;
 
     internal enum LobbyAction { Arrived, Wait, SelectMode, Tab, EscapePromo, EscapeProduction,
-        ConfirmNetworkReconnect, ReconnectLimit, PromoLimit, EscapeCollection }
+        ConfirmNetworkReconnect, ReconnectLimit, PromoLimit, EscapeCollection, EscapeUnknown }
     internal sealed class LobbyNavigationState
     {
         internal int PromoEscs;
@@ -38,6 +40,8 @@ public sealed class LaunchFlow
         // 收藏入口可能先落在「增加容量」再落在「收藏室」；
         // 只对每个已确认的安全返回页最多发送两次 Esc，未知画面仍不输入。
         internal int CollectionEscs;
+        // 未知画面（邮件/交易行通知、加载中、对局内等）有限次 ESC 尝试的已用次数。
+        internal int UnknownEscs;
         internal int ReconnectClicks;
         internal bool NetworkRestartUsed;
     }
@@ -129,8 +133,13 @@ public sealed class LaunchFlow
                 action = LobbyAction.ConfirmNetworkReconnect;
                 break;
             default:
-                // 无法区分加载、断线弹窗或正在进行的对局，不猜测任何全局输入。
-                return LobbyAction.Wait;
+                // 未知画面：邮件/交易行通知、加载中、对局内等。用户要求“遇到没记录的界面先点几次 ESC
+                // 试试”，因此这里有限次发送 ESC 尝试退回大厅；次数用尽后回到“只等待”，
+                // 避免在真正的对局里反复弹出/关闭暂停菜单，也绝不在未知画面上无限按键。
+                if (state.UnknownEscs >= MaxUnknownEscapes) return LobbyAction.Wait;
+                state.UnknownEscs++;
+                action = LobbyAction.EscapeUnknown;
+                break;
         }
         RunFocusedAction(ensureForeground, () => input(action), ct);
         return action;
@@ -450,6 +459,7 @@ public sealed class LaunchFlow
                             break;
                         case LobbyAction.EscapeProduction:
                         case LobbyAction.EscapeCollection:
+                        case LobbyAction.EscapeUnknown:
                             _probe.InvalidateRestartSceneForInput();
                             _input.PressEscape();
                             break;
@@ -492,6 +502,11 @@ public sealed class LaunchFlow
                         navigation.CollectionEscs);
                     await Task.Delay(1500, ct);
                     break;
+                case LobbyAction.EscapeUnknown:
+                    _log.Information("未知画面，按 ESC 尝试返回大厅({N}/{Max})。",
+                        navigation.UnknownEscs, MaxUnknownEscapes);
+                    await Task.Delay(2500, ct);
+                    break;
                 case LobbyAction.ConfirmNetworkReconnect:
                     if (await _probe.TryHandleNetworkReconnectAsync(hwnd, ct))
                         _log.Information("已向确认重连按钮发送第{N}/{Max}次点击，等待画面响应。", navigation.ReconnectClicks, MaxNetworkReconnectAttempts);
@@ -519,6 +534,7 @@ public sealed class LaunchFlow
 
         var (png, dump) = await _probe.DumpAsync(hwnd, "fail-等待大厅");
         throw new StepFailedException("等待大厅",
-            $"{s.LobbyTimeoutSeconds}s 内未到达大厅；未识别画面只等待、不发送按键，请确认游戏当前界面后再执行。诊断截图:{png}", png, dump);
+            $"{s.LobbyTimeoutSeconds}s 内未到达大厅；已尝试 {navigation.UnknownEscs} 次 ESC 仍未回到大厅，" +
+            $"请确认游戏当前界面后再执行。诊断截图:{png}", png, dump);
     }
 }

@@ -82,14 +82,29 @@ public sealed class LaunchNavigationGuardTests
     [Theory]
     [InlineData(null)]
     [InlineData("unrecognized-match-or-disconnect")]
-    public void Repeated_unknown_screens_only_wait_and_never_send_escape_tab_or_click(string? screen)
+    public void Unknown_screens_get_a_bounded_number_of_escape_attempts_then_only_wait(string? screen)
     {
-        int inputs = 0;
+        int escapes = 0;
         var state = new LaunchFlow.LobbyNavigationState();
+        for (int pass = 0; pass < LaunchFlow.MaxUnknownEscapes; pass++)
+            Assert.Equal(LaunchFlow.LobbyAction.EscapeUnknown,
+                LaunchFlow.DispatchLobbyScreen(screen, state, () => true, _ => escapes++, CancellationToken.None));
         for (int pass = 0; pass < 20; pass++)
             Assert.Equal(LaunchFlow.LobbyAction.Wait,
-                LaunchFlow.DispatchLobbyScreen(screen, state, () => true, _ => inputs++, CancellationToken.None));
-        Assert.Equal(0, inputs);
+                LaunchFlow.DispatchLobbyScreen(screen, state, () => true, _ => escapes++, CancellationToken.None));
+        Assert.Equal(LaunchFlow.MaxUnknownEscapes, escapes);
+    }
+
+    [Fact]
+    public void Unknown_screen_escape_returns_to_arrived_when_the_lobby_appears()
+    {
+        var state = new LaunchFlow.LobbyNavigationState();
+        int escapes = 0;
+        Assert.Equal(LaunchFlow.LobbyAction.EscapeUnknown, LaunchFlow.DispatchLobbyScreen(
+            "mail-or-notification", state, () => true, _ => escapes++, CancellationToken.None));
+        Assert.Equal(LaunchFlow.LobbyAction.Arrived, LaunchFlow.DispatchLobbyScreen(
+            AnchorKeys.Lobby, state, () => true, _ => escapes++, CancellationToken.None));
+        Assert.Equal(1, escapes);
     }
 
     [Fact]
