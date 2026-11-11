@@ -253,6 +253,20 @@ public sealed class DeepScheduleAuditTests : IDisposable
     }
 
     [Fact]
+    public void Prewarm_never_starts_before_the_craft_finishes()
+    {
+        var ready = _clock.Now.AddSeconds(600);
+        _engine.RecordObservation(FacilityKey.Workbench, FacilityPhase.Crafting, "夜间制造", ready, null);
+
+        var next = _engine.ComputeNextRunAt(_plan, _settings);
+        Assert.NotNull(next);
+        var prewarmAt = _coordinator.PrewarmAt(next.Value);
+        Assert.True(prewarmAt >= ready,
+            $"预启动不应早于倒计时结束：{prewarmAt:HH:mm:ss} < {ready:HH:mm:ss}");
+        Assert.True(prewarmAt <= next.Value);
+    }
+
+    [Fact]
     public void Stopping_while_idle_also_prevents_an_automatic_prewarm()
     {
         _engine.RecordObservation(FacilityKey.Workbench, FacilityPhase.Crafting, "跨日制造", _clock.Now.AddSeconds(30), null);
@@ -289,7 +303,9 @@ public sealed class DeepScheduleAuditTests : IDisposable
         var ready = _clock.Now.AddHours(6);
         _engine.RecordObservation(FacilityKey.Workbench, FacilityPhase.Crafting, "原在制品", ready, null);
         var reloaded = new ScheduleEngine(new JsonStoreBrick(), Path.Combine(_directory, "state.json"), _clock, _log);
-        Assert.Equal(ready.AddMinutes(1), reloaded.ComputeNextRunAt(_plan, _settings));
+        var next = reloaded.ComputeNextRunAt(_plan, _settings);
+        Assert.NotNull(next);
+        Assert.InRange(next.Value, ready.AddSeconds(60), ready.AddSeconds(300));
         Assert.Equal(27, reloaded.State.For(FacilityKey.Workbench).ReadyAt!.Value.Day);
     }
 
@@ -311,7 +327,9 @@ public sealed class DeepScheduleAuditTests : IDisposable
         _engine.RecordObservation(FacilityKey.Workbench, FacilityPhase.Crafting, "5.45×39mm BT", ready, null);
         _plan.For(FacilityKey.Workbench).SetCustomSelection("4.6×30mm AP SX", "4.6×30mm AP SX");
         Assert.Equal("5.45×39mm BT", _engine.State.For(FacilityKey.Workbench).ItemName);
-        Assert.Equal(ready.AddMinutes(1), _engine.ComputeNextRunAt(_plan, _settings));
+        var next = _engine.ComputeNextRunAt(_plan, _settings);
+        Assert.NotNull(next);
+        Assert.InRange(next.Value, ready.AddSeconds(60), ready.AddSeconds(300));
     }
 
     public void Dispose() { _coordinator.Dispose(); (_log as IDisposable)?.Dispose(); }

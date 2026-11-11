@@ -55,7 +55,11 @@ public sealed class AppSettings
     /// <summary>定时循环总开关。关闭时仅手动"立即执行"生效。</summary>
     public bool AutoLoopEnabled { get; set; }
 
-    /// <summary>制造完成时刻之后追加的缓冲(秒),吸收 OCR 读数与游戏结算的小误差。</summary>
+    /// <summary>
+    /// 制造完成时刻之后追加的最小缓冲(秒)，吸收 OCR 读数与游戏结算的小误差。
+    /// 实际收取时刻在 [缓冲, 缓冲+240 秒] 之间按“设施+完成时刻”稳定随机；
+    /// 默认 60 秒即“倒计时结束后 1–5 分钟”的窗口。
+    /// </summary>
     public int RunBufferSeconds { get; set; } = 60;
 
     /// <summary>一轮失败后的重试间隔(分钟)。失败会通知,不静默;间隔防止连环失败刷屏。</summary>

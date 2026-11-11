@@ -166,7 +166,7 @@ public sealed partial class AutomationCoordinator : IDisposable
         {
             if (_clock.Now >= n)
                 _ = ExecuteGuardedAsync("定时触发", true, true, RunRoundAsync, appStop, automaticTrigger: true);
-            else if (_clock.Now >= n.AddSeconds(-PrewarmLeadSeconds)
+            else if (_clock.Now >= PrewarmAt(n)
                      && _prewarmedFor != n
                      && _windowBrick.FindGameClient(s.WindowMatch) is null)
             {
@@ -175,6 +175,19 @@ public sealed partial class AutomationCoordinator : IDisposable
                 _ = PrewarmAsync(appStop);
             }
         }
+    }
+
+    /// <summary>
+    /// 预启动时刻：目标前 120 秒，但绝不早于最早一件制造的完成时刻。
+    /// 预启动只把游戏带到大厅、不进特勤处，但用户要的是“倒计时结束后再去”，
+    /// 所以也不应在倒计时结束前就把游戏窗口拉起来。
+    /// </summary>
+    internal DateTimeOffset PrewarmAt(DateTimeOffset next)
+    {
+        var at = next.AddSeconds(-PrewarmLeadSeconds);
+        if (_engine.EarliestCraftCompletionAt(_plan()) is { } completion && completion > at)
+            at = completion;
+        return at;
     }
 
     internal static bool ShouldMonitorIdleNetworkReconnect(bool isRunning, bool runsBlocked) =>

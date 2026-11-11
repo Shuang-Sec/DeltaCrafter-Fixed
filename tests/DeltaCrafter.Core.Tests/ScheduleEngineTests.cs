@@ -29,13 +29,67 @@ public class ScheduleEngineTests : IDisposable
     }
 
     [Fact]
-    public void Crafting_facility_schedules_ready_plus_buffer()
+    public void Crafting_facility_schedules_ready_plus_between_one_and_five_minutes()
     {
         _plan.For(FacilityKey.Workbench).Enabled = true;
         var ready = _clock.Now.AddHours(2);
         _engine.RecordObservation(FacilityKey.Workbench, FacilityPhase.Crafting, "物品A", ready, null);
 
-        Assert.Equal(ready.AddSeconds(60), _engine.ComputeNextRunAt(_plan, _settings));
+        var next = _engine.ComputeNextRunAt(_plan, _settings);
+        Assert.NotNull(next);
+        Assert.InRange(next.Value, ready.AddSeconds(60), ready.AddSeconds(300));
+    }
+
+    [Fact]
+    public void Collect_delay_is_stable_across_repeated_scheduler_queries()
+    {
+        _plan.For(FacilityKey.Workbench).Enabled = true;
+        var ready = _clock.Now.AddHours(2);
+        _engine.RecordObservation(FacilityKey.Workbench, FacilityPhase.Crafting, "物品A", ready, null);
+
+        // 调度循环每 10 秒问一次；随机延迟必须由完成时刻稳定推导，否则时间会来回抖动。
+        var first = _engine.ComputeNextRunAt(_plan, _settings);
+        for (int i = 0; i < 10; i++)
+            Assert.Equal(first, _engine.ComputeNextRunAt(_plan, _settings));
+    }
+
+    [Fact]
+    public void Collect_delay_varies_between_crafts_but_stays_in_the_window()
+    {
+        var delays = new HashSet<double>();
+        for (int minute = 0; minute < 24; minute++)
+        {
+            var ready = new DateTimeOffset(2026, 11, 11, 18, minute, 0, TimeSpan.FromHours(8));
+            var delay = ScheduleEngine.ResolveCollectDelay(FacilityKey.Workbench, ready, _settings).TotalSeconds;
+            Assert.InRange(delay, 60, 300);
+            delays.Add(delay);
+        }
+        Assert.True(delays.Count >= 5, $"随机延迟退化成了固定值：{string.Join(",", delays)}");
+    }
+
+    [Fact]
+    public void Run_buffer_is_the_floor_of_the_random_collect_window()
+    {
+        var ready = _clock.Now.AddHours(2);
+        var settings = new AppSettings { RunBufferSeconds = 120 };
+        for (int minute = 0; minute < 12; minute++)
+        {
+            var delay = ScheduleEngine.ResolveCollectDelay(FacilityKey.ArmorStation,
+                ready.AddMinutes(minute), settings).TotalSeconds;
+            Assert.InRange(delay, 120, 360);
+        }
+    }
+
+    [Fact]
+    public void Earliest_craft_completion_ignores_non_crafting_facilities()
+    {
+        _plan.For(FacilityKey.Workbench).Enabled = true;
+        _plan.For(FacilityKey.TechCenter).Enabled = true;
+        var ready = _clock.Now.AddHours(3);
+        _engine.RecordObservation(FacilityKey.Workbench, FacilityPhase.ReadyToCollect, "A", null, null);
+        _engine.RecordObservation(FacilityKey.TechCenter, FacilityPhase.Crafting, "B", ready, null);
+
+        Assert.Equal(ready, _engine.EarliestCraftCompletionAt(_plan));
     }
 
     [Fact]
@@ -53,10 +107,13 @@ public class ScheduleEngineTests : IDisposable
     {
         _plan.For(FacilityKey.Workbench).Enabled = true;
         _plan.For(FacilityKey.TechCenter).Enabled = true;
+        var techReady = _clock.Now.AddHours(1);
         _engine.RecordObservation(FacilityKey.Workbench, FacilityPhase.Crafting, "A", _clock.Now.AddHours(5), null);
-        _engine.RecordObservation(FacilityKey.TechCenter, FacilityPhase.Crafting, "B", _clock.Now.AddHours(1), null);
+        _engine.RecordObservation(FacilityKey.TechCenter, FacilityPhase.Crafting, "B", techReady, null);
 
-        Assert.Equal(_clock.Now.AddHours(1).AddSeconds(60), _engine.ComputeNextRunAt(_plan, _settings));
+        var next = _engine.ComputeNextRunAt(_plan, _settings);
+        Assert.NotNull(next);
+        Assert.InRange(next.Value, techReady.AddSeconds(60), techReady.AddSeconds(300));
     }
 
     [Fact]
