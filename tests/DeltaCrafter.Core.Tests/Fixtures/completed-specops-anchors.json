@@ -1,0 +1,261 @@
+{
+  "calibrated": true,
+  "revision": 10,
+  "calibratedOn": "2560×1440 实机标定；1920×1080 样本验证 2026-07-30(rev9:新增仓库空间不足 Toast 判定)",
+  "keywords": {
+    "idle": [
+      "空闲中",
+      "空闲"
+    ],
+    "buttonProduce": [
+      "生产"
+    ],
+    "buttonReplenish": [
+      "一键补齐",
+      "补齐"
+    ],
+    "buttonAbort": [
+      "中止"
+    ],
+    "buttonCollect": [
+      "领取"
+    ],
+    "launcherStart": [
+      "开始游戏"
+    ]
+  },
+  "screens": {
+    "mode-select": {
+      "probe": {
+        "roi": {
+          "x": 0.04,
+          "y": 0.655,
+          "w": 0.23,
+          "h": 0.055
+        },
+        "mustContain": "战役模式"
+      },
+      "points": {
+        "mode-entry": {
+          "x": 0.27,
+          "y": 0.382
+        }
+      },
+      "rois": {}
+    },
+    "promo-announce": {
+      "probe": {
+        "roi": {
+          "x": 0.42,
+          "y": 0.925,
+          "w": 0.16,
+          "h": 0.062
+        },
+        "mustContain": "继续"
+      },
+      "points": {},
+      "rois": {}
+    },
+    "safehouse": {
+      "probe": {
+        "roi": {
+          "x": 0.38,
+          "y": 0.89,
+          "w": 0.24,
+          "h": 0.1
+        },
+        "mustContain": "开始游戏"
+      },
+      "points": {},
+      "rois": {}
+    },
+    "lobby": {
+      "probe": {
+        "roi": {
+          "x": 0.79,
+          "y": 0.865,
+          "w": 0.18,
+          "h": 0.062
+        },
+        "mustContain": "配装",
+        "upscale": 1.5
+      },
+      "points": {
+        "specops-entry": {
+          "x": 0.4375,
+          "y": 0.0507
+        }
+      },
+      "rois": {}
+    },
+    "specops-home": {
+      "probe": {
+        "roi": {
+          "x": 0.06,
+          "y": 0.075,
+          "w": 0.14,
+          "h": 0.07
+        },
+        "mustContain": "升级制造"
+      },
+      "points": {
+        "slot-tech-center": {
+          "x": 0.1435,
+          "y": 0.3956
+        },
+        "slot-workbench": {
+          "x": 0.33,
+          "y": 0.3956
+        },
+        "slot-pharmacy-lab": {
+          "x": 0.1435,
+          "y": 0.7164
+        },
+        "slot-armor-station": {
+          "x": 0.33,
+          "y": 0.7164
+        },
+        "back-to-lobby": {
+          "x": 0.09,
+          "y": 0.0507
+        }
+      },
+      "rois": {
+        "slot-tech-center": {
+          "x": 0.055,
+          "y": 0.309,
+          "w": 0.178,
+          "h": 0.175
+        },
+        "slot-workbench": {
+          "x": 0.241,
+          "y": 0.309,
+          "w": 0.178,
+          "h": 0.175
+        },
+        "slot-pharmacy-lab": {
+          "x": 0.055,
+          "y": 0.629,
+          "w": 0.178,
+          "h": 0.175
+        },
+        "slot-armor-station": {
+          "x": 0.241,
+          "y": 0.629,
+          "w": 0.178,
+          "h": 0.175
+        }
+      }
+    },
+    "production": {
+      "probe": {
+        "roi": {
+          "x": 0.04,
+          "y": 0.08,
+          "w": 0.27,
+          "h": 0.075
+        },
+        "mustContain": "全部类型"
+      },
+      "points": {
+        "action-button": {
+          "x": 0.9,
+          "y": 0.881
+        }
+      },
+      "rois": {
+        "list-area": {
+          "x": 0.046,
+          "y": 0.178,
+          "w": 0.254,
+          "h": 0.742
+        },
+        "detail-title": {
+          "x": 0.325,
+          "y": 0.148,
+          "w": 0.3,
+          "h": 0.056
+        },
+        "action-button": {
+          "x": 0.82,
+          "y": 0.85,
+          "w": 0.15,
+          "h": 0.062
+        },
+        "remaining-time": {
+          "x": 0.795,
+          "y": 0.788,
+          "w": 0.175,
+          "h": 0.062
+        }
+      }
+    },
+    "replenish-popup": {
+      "probe": {
+        "roi": {
+          "x": 0.19,
+          "y": 0.2,
+          "w": 0.17,
+          "h": 0.1
+        },
+        "mustContain": "补齐清单"
+      },
+      "points": {
+        "buy": {
+          "x": 0.5,
+          "y": 0.699
+        }
+      },
+      "rois": {}
+    },
+    "collect-result": {
+      "probe": {
+        "roi": {
+          "x": 0.4,
+          "y": 0.185,
+          "w": 0.2,
+          "h": 0.09
+        },
+        "mustContain": "奖励"
+      },
+      "points": {
+        "dismiss": {
+          "x": 0.501,
+          "y": 0.957
+        }
+      },
+      "rois": {}
+    },
+    "abort-confirm": {
+      "probe": {
+        "roi": {
+          "x": 0.36,
+          "y": 0.4,
+          "w": 0.28,
+          "h": 0.075
+        },
+        "mustContain": "不退回"
+      },
+      "points": {
+        "confirm": {
+          "x": 0.582,
+          "y": 0.622
+        }
+      },
+      "rois": {}
+    },
+    "warehouse-full": {
+      "probe": {
+        "roi": {
+          "x": 0.42,
+          "y": 0.135,
+          "w": 0.18,
+          "h": 0.065
+        },
+        "mustContain": "仓库空间不足"
+      },
+      "points": {},
+      "rois": {}
+    }
+  }
+}

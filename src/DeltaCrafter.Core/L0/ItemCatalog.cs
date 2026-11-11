@@ -29,12 +29,9 @@ public sealed class ItemCatalog
 }
 
 /// <summary>
-/// 槽位 OCR 物品名 → 目录规范显示名(纯函数)。判定阶梯:
-/// ① 规范形(TextMatch)完全相等 → 命中;
-/// ② 惟一最近邻:编辑距离 ≤ max(1, 规范长度÷3),且比第二名近至少 2 → 命中。
-///    容差取 1/3 是因为中文 OCR 常把单字拆成偏旁两字(实测「激」读成「氵敫」,距离 2);
-///    「近至少 2」的间隔保证同族名(如 7.62×39mm AP / PS)之间绝不误认——分不清就不认。
-/// ③ 其余返回 null,调用方保留原文——并列、太短、太烂都不猜。
+/// 槽位 OCR 物品名 → 目录规范显示名(纯函数)。仅接受完整名称或显式 OCR 别名，
+/// 容忍已验证的同形误读；不按编辑距离猜相邻型号。目录不完整时，
+/// BT 与 BS 即使只差一个字符，也必须保留读到的 BT。多项指向不同显示名时返回 null。
 /// </summary>
 public static class CatalogNameResolver
 {
@@ -43,35 +40,16 @@ public static class CatalogNameResolver
         string target = TextMatch.Canonical(ocrName);
         if (target.Length < 3 || items.Count == 0) return null; // 过短读数做不了可靠判定
 
-        string? bestName = null;
-        int best = int.MaxValue, second = int.MaxValue;
+        string? matchedName = null;
         foreach (var item in items)
         {
-            int d = Levenshtein(TextMatch.Canonical(item.Name), target);
-            if (item.Ocr.Length > 0 && item.Ocr != item.Name)
-                d = Math.Min(d, Levenshtein(TextMatch.Canonical(item.Ocr), target));
-            if (d < best) { second = best; best = d; bestName = item.Name; }
-            else if (d < second) { second = d; }
+            bool matches = TextMatch.MatchesRecipeName(ocrName, item.Name) ||
+                (item.Ocr.Length > 0 && TextMatch.MatchesRecipeName(ocrName, item.Ocr));
+            if (!matches) continue;
+            if (matchedName is not null && !string.Equals(matchedName, item.Name, StringComparison.Ordinal))
+                return null; // 目录别名冲突时，不按条目顺序选择其中一个。
+            matchedName = item.Name;
         }
-        if (best == 0) return bestName;
-        int tolerance = Math.Max(1, target.Length / 3);
-        bool uniqueEnough = second == int.MaxValue || second - best >= 2;
-        return best <= tolerance && uniqueEnough ? bestName : null;
-    }
-
-    private static int Levenshtein(string a, string b)
-    {
-        var prev = new int[b.Length + 1];
-        var cur = new int[b.Length + 1];
-        for (int j = 0; j <= b.Length; j++) prev[j] = j;
-        for (int i = 1; i <= a.Length; i++)
-        {
-            cur[0] = i;
-            for (int j = 1; j <= b.Length; j++)
-                cur[j] = Math.Min(Math.Min(cur[j - 1] + 1, prev[j] + 1),
-                                  prev[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1));
-            (prev, cur) = (cur, prev);
-        }
-        return prev[b.Length];
+        return matchedName;
     }
 }

@@ -67,6 +67,9 @@ public sealed class AppSettings
     /// </summary>
     public bool AutoReplenishMaterials { get; set; } = true;
 
+    /// <summary>断线确认连续失败且确认不在对局时，是否允许自动关闭并重新拉起一次游戏。</summary>
+    public bool AutoRestartOnNetworkReconnect { get; set; } = true;
+
     /// <summary>等待期间阻止系统睡眠(不阻止熄屏)。关闭则由用户自行保证到点时电脑醒着。</summary>
     public bool PreventSleepWhileWaiting { get; set; } = true;
 

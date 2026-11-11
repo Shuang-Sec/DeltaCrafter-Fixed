@@ -48,6 +48,7 @@ public sealed class AbortFlow
         }
 
         _log.Information("{Facility} 点击中止。", facility);
+        ct.ThrowIfCancellationRequested();
         _probe.ClickPoint(hwnd, AnchorKeys.Production, AnchorKeys.PointActionButton);
 
         await ResolveAbortAsync(hwnd, facility, prodSpec, kw, ct);
@@ -61,10 +62,16 @@ public sealed class AbortFlow
         StateKeywords kw, CancellationToken ct)
     {
         long deadline = Environment.TickCount64 + 12_000;
+        bool confirmationClicked = false;
         while (Environment.TickCount64 < deadline)
         {
             ct.ThrowIfCancellationRequested();
             await Task.Delay(800, ct);
+            if (await _probe.TryConfirmBusinessDialogAsync(hwnd, ConfirmationKind.Abort, ct, !confirmationClicked))
+            {
+                confirmationClicked = true;
+                continue;
+            }
 
             // 确认弹窗优先判定(它可能浮在生产界面之上,生产界面探针仍会命中)。
             string? screen = await _probe.WhichScreenAsync(hwnd,
@@ -74,15 +81,6 @@ public sealed class AbortFlow
 
             if (screen == AnchorKeys.AbortConfirm)
             {
-                var confirm = _probe.Screen(AnchorKeys.AbortConfirm).Point(AnchorKeys.PointConfirm);
-                if (confirm.X == 0 && confirm.Y == 0)
-                {
-                    var (png, dump) = await _probe.DumpAsync(hwnd, "fail-中止确认弹窗待校准");
-                    throw new StepFailedException($"中止{facility}",
-                        "检测到中止确认弹窗,但其确认按钮尚未校准(坐标为 0)。" +
-                        $"请把该弹窗截图发来以便标定 abort-confirm。诊断截图:{png}", png, dump);
-                }
-                _probe.ClickPoint(hwnd, AnchorKeys.AbortConfirm, AnchorKeys.PointConfirm);
                 continue;
             }
 
@@ -91,7 +89,7 @@ public sealed class AbortFlow
                 // 仍在生产界面:若按钮不再是「中止」(变为 生产/一键补齐),即已中止成功。
                 string label = ScreenProbe.Normalize(
                     await _probe.ReadRoiAsync(hwnd, prodSpec.Roi(AnchorKeys.RoiActionButton)));
-                if (label.Length > 0 && !LabelHits(label, kw.ButtonAbort)) return;
+                if (IsConfirmedIdleLabel(label)) return;
             }
         }
 
@@ -115,6 +113,9 @@ public sealed class AbortFlow
     private static bool LabelHits(string normalizedLabel, IEnumerable<string> keywords) =>
         keywords.Any(k => k.Length > 0 &&
             normalizedLabel.Contains(ScreenProbe.Normalize(k), StringComparison.Ordinal));
+
+    internal static bool IsConfirmedIdleLabel(string label) =>
+        ScreenProbe.Normalize(label) is "生产" or "一键补齐" or "一健补齐";
 
     private async Task EnsureBackHomeAsync(nint hwnd, CancellationToken ct)
     {

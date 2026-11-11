@@ -87,6 +87,7 @@ public static class AnchorKeys
     public const string CollectResult = "collect-result";
     public const string AbortConfirm = "abort-confirm";
     public const string WarehouseFull = "warehouse-full";
+    public const string NetworkReconnect = "network-reconnect";
 
     public const string PointModeEntry = "mode-entry";
     public const string PointSpecOpsEntry = "specops-entry";
@@ -95,6 +96,7 @@ public static class AnchorKeys
     public const string PointActionButton = "action-button";
     public const string PointBuy = "buy";
     public const string PointConfirm = "confirm";
+    public const string PointNetworkReconnect = "confirm-reconnect";
     public static string FacilitySlot(FacilityKey key) => "slot-" + FacilityKeys.JsonKey(key);
 
     public const string RoiListArea = "list-area";

@@ -14,7 +14,7 @@ namespace DeltaCrafter.Core.L1;
 public static partial class CountdownParser
 {
     private static readonly Regex ColonPattern =
-        new(@"(\d{1,3})\s*:\s*([0-5]?\d)\s*:\s*([0-5]?\d)", RegexOptions.Compiled);
+        new(@"(?<!\d)(\d{1,3})\s*:\s*([0-5]?\d)\s*:\s*([0-5]?\d)(?!\d)", RegexOptions.Compiled);
 
     // 2560×1440 实测「07:59:52」会被读成「剩 余 时 间 ： 07 、 59 52」。
     // 只有标签完整、恰好三个合法数字组且组间仅含已观察到的分隔符时才采信;
@@ -34,18 +34,25 @@ public static partial class CountdownParser
         remaining = default;
         if (string.IsNullOrWhiteSpace(ocrText)) return false;
         string folded = FoldDigitLookalikes(ocrText);
+        // Regex 的 \d 还包含全角和其他 Unicode 数字，而 int.Parse 不接受这些字形。
+        // 与实际 OCR 候选的 ASCII 合同保持一致：不支持的读数返回失败，不抛格式异常。
+        if (folded.Any(c => char.IsDigit(c) && (c < '0' || c > '9'))) return false;
 
-        var m = ColonPattern.Match(folded);
-        if (m.Success)
+        foreach (Match candidate in ColonPattern.Matches(folded))
         {
+            // 不能把第四个数字组、超长小时尾部或非法秒数截成一个合法小片段。
+            string before = folded[..candidate.Index];
+            string after = folded[(candidate.Index + candidate.Length)..];
+            if (Regex.IsMatch(before, @"\d[ \t]*:[ \t]*$") ||
+                Regex.IsMatch(after, @"^[ \t:、,.;·．]*\d")) continue;
             remaining = new TimeSpan(
-                int.Parse(m.Groups[1].Value),
-                int.Parse(m.Groups[2].Value),
-                int.Parse(m.Groups[3].Value));
+                int.Parse(candidate.Groups[1].Value),
+                int.Parse(candidate.Groups[2].Value),
+                int.Parse(candidate.Groups[3].Value));
             return true;
         }
 
-        m = LabelledSeparatedDigitsPattern.Match(folded);
+        var m = LabelledSeparatedDigitsPattern.Match(folded);
         if (m.Success)
         {
             remaining = new TimeSpan(

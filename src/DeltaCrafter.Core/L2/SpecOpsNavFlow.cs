@@ -19,10 +19,15 @@ public sealed class SpecOpsNavFlow
     {
         if (await _probe.IsOnAsync(hwnd, AnchorKeys.SpecOpsHome)) return; // 游戏恢复在特勤处页
 
+        if (!await _probe.ClickSpecOpsEntryAsync(hwnd, ct))
+            throw new StepFailedException("进入特勤处",
+                "大厅当前帧未识别到唯一“特勤处”顶栏标签，未点击旧固定坐标。");
+
+        // 点击已经由同一帧 OCR 完成；后续只等待并验证页面，避免校验超时后再次点入错误页面。
         await _runner.RunAsync(hwnd, new Step(
-            "进入特勤处",
-            () => _probe.ClickPoint(hwnd, AnchorKeys.Lobby, AnchorKeys.PointSpecOpsEntry),
+            "等待特勤处",
+            () => { },
             () => _probe.IsOnAsync(hwnd, AnchorKeys.SpecOpsHome),
-            TimeSpan.FromSeconds(15)), ct);
+            TimeSpan.FromSeconds(15), RetryOnce: false), ct);
     }
 }

@@ -12,13 +12,24 @@ namespace DeltaCrafter.Core.L0;
 /// </summary>
 public static class TextMatch
 {
-    public static string Canonical(string text)
+    public static string Canonical(string text) => Canonical(text, preserveDecimalPoints: false);
+
+    private static string Canonical(string text, bool preserveDecimalPoints)
     {
         var sb = new StringBuilder(text.Length);
         foreach (char c in text)
         {
             if (char.IsWhiteSpace(c)) continue;
-            if (c is '.' or '`' or '·' or '\'' or '’' or '‘' or '´' or ',' or '，') continue; // 弱标点(实测 . 被读成 ` 或 ，)
+            if (c is '.' or '．' or '`' or '·' or '\'' or '’' or '‘' or '´' or ',' or '，')
+            {
+                if (preserveDecimalPoints) sb.Append('.'); // 名称中的 3.5 与 35 是不同规格。
+                continue;
+            }
+            if (preserveDecimalPoints && c == '毛')
+            {
+                sb.Append(".6"); // 只在配方全名中恢复实测 .6 连体误读。
+                continue;
+            }
             char folded = c switch
             {
                 'O' or 'o' or 'О' or 'о' => '0', // 含西里尔 O
@@ -34,6 +45,43 @@ public static class TextMatch
 
     public static bool LineContains(string lineText, string target) =>
         Canonical(lineText).Contains(Canonical(target), StringComparison.Ordinal);
+
+    /// <summary>
+    /// 配方名称必须全字段一致，保留 BT/BS、ST+、+P 等型号差异。
+    /// 仅忽略独立数量尾标(*180/×180)，并容忍实测中文同形误读及 WARRIOR 3S 品牌前缀。
+    /// 页面关键词仍使用 LineContains；此方法不做通用包含或编辑距离猜测。
+    /// </summary>
+    public static bool MatchesRecipeName(string observed, string expected)
+    {
+        string actualName = RecipeCanonical(observed);
+        string expectedName = RecipeCanonical(expected);
+        return actualName.Length > 0 && string.Equals(actualName, expectedName, StringComparison.Ordinal);
+    }
+
+    private static string RecipeCanonical(string text)
+    {
+        // 数量符号必须明确，不能把型号里的 X180 当作数量吞掉；扫描保存的匹配键也可能含数量。
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\s*[*×]\s*[0-9]+\s*$", "");
+        // 实图的标题品质图标会被识别成边缘中文双引号；只去该装饰，不删名称内部字符。
+        text = text.Trim().Trim('“', '”');
+        // 详情标题左侧的品质图标偶尔会粘成前导字符：实测为「0/》/卜」+数字，
+        // 且只在紧接着的数字小数分隔符前出现。仅剥离这组已验证的装饰，
+        // 不放宽普通名称前缀，避免把相似型号误认成目标配方。
+        text = System.Text.RegularExpressions.Regex.Replace(text,
+            @"^(?:0|O|»|》|卜|>|僉)\s*(?=[0-9]\s*[\.．])", "");
+        // 「0凵GHT」属于已验证的 OLIGHT 品牌误读，首位0不是品质图标。
+        if (!Canonical(text).StartsWith("0凵GHT", StringComparison.Ordinal))
+            text = System.Text.RegularExpressions.Regex.Replace(text,
+                @"^(?:0|O|»|》|卜|>|僉)\s*(?=[\p{IsCJKUnifiedIdeographs}])", "");
+        string canonical = Canonical(text.Replace("氵敫", "激", StringComparison.Ordinal)
+            .Replace("喵准镜", "瞄准镜", StringComparison.Ordinal), preserveDecimalPoints: true);
+
+        // 默认目录的 OCR 键特意省略此品牌；只接受已验证的这一个完整型号别名。
+        string warrior = Canonical("WARRIOR3S战术手电");
+        if (canonical == Canonical("OLIGHT") + warrior || canonical == Canonical("0凵GHT") + warrior)
+            return warrior;
+        return canonical;
+    }
 
     /// <summary>子串近似匹配距离:needle 与 haystack 任意子串的最小编辑距离
     /// (半全局对齐,haystack 头尾多余字符免费;双方先取规范形)。

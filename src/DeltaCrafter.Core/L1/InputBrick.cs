@@ -48,6 +48,9 @@ public sealed class InputBrick
 
     public void PressEscape() => PressKey(NativeInputApi.VK_ESCAPE);
 
+    /// <summary>已确认启动广告页的“空格继续”。</summary>
+    internal void PressSpace() => PressKey(0x20);
+
     /// <summary>Tab 在游戏内为「进入下一界面」快捷键(基地→大厅)。</summary>
     public void PressTab() => PressKey(NativeInputApi.VK_TAB);
 

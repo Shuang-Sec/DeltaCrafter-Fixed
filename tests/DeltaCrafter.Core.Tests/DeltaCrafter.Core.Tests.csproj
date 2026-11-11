@@ -17,6 +17,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="Fixtures\*" CopyToOutputDirectory="PreserveNewest" />
     <!-- 契约测试要在测试输出里读到默认 anchors.json;项目引用的 Content 不会自动流入,
          显式以 Link 复制一份,保证 AppContext.BaseDirectory\Data 下存在。 -->
     <Content Include="..\..\src\DeltaCrafter.Core\Data\anchors.json"
