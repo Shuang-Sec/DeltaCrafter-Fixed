@@ -287,6 +287,25 @@ public sealed class DeepScheduleAuditTests : IDisposable
         Assert.Equal(_clock.Now.AddMinutes(30), _engine.State.FailureBackoffUntil);
     }
 
+    [Theory]
+    [InlineData(true, false)]  // 游戏窗口正常可见
+    [InlineData(false, true)]  // 游戏最小化在任务栏
+    public void Running_game_is_never_prewarmed(bool visible, bool minimized)
+    {
+        // 用户要求：领取时间之前不要把正在运行的游戏窗口拉起来，哪怕它是最小化的。
+        var now = _clock.Now;
+        Assert.False(AutomationCoordinator.ShouldPrewarm(now, now.AddMinutes(-1), false, visible, minimized));
+    }
+
+    [Fact]
+    public void Closed_game_is_prewarmed_once_when_the_time_comes()
+    {
+        var now = _clock.Now;
+        Assert.True(AutomationCoordinator.ShouldPrewarm(now, now.AddSeconds(-1), false, false, false));
+        Assert.False(AutomationCoordinator.ShouldPrewarm(now, now.AddSeconds(1), false, false, false));
+        Assert.False(AutomationCoordinator.ShouldPrewarm(now, now.AddSeconds(-1), true, false, false));
+    }
+
     [Fact]
     public void Stopping_while_idle_also_prevents_an_automatic_prewarm()
     {

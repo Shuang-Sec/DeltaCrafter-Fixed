@@ -168,9 +168,9 @@ public sealed partial class AutomationCoordinator : IDisposable
         {
             if (_clock.Now >= n)
                 _ = ExecuteGuardedAsync("定时触发", true, true, RunRoundAsync, appStop, automaticTrigger: true);
-            else if (_clock.Now >= PrewarmAt(n)
-                     && _prewarmedFor != n
-                     && _windowBrick.FindGameClient(s.WindowMatch) is null)
+            else if (ShouldPrewarm(_clock.Now, PrewarmAt(n), _prewarmedFor == n,
+                         _windowBrick.FindGameClient(s.WindowMatch) is not null,
+                         _windowBrick.HasMinimizedCandidate(s.WindowMatch)))
             {
                 // 每个目标时刻只尝试一次预启动;失败会通知,正式轮到点仍会自行启动。
                 _prewarmedFor = n;
@@ -178,6 +178,15 @@ public sealed partial class AutomationCoordinator : IDisposable
             }
         }
     }
+
+    /// <summary>
+    /// 是否值得预启动：只在时间到、本轮还没预启动过、且**游戏已经退出**时。
+    /// 游戏还在运行（哪怕最小化到任务栏）时绝不预启动——用户要求领取时间之前不要把
+    /// 正在运行的游戏窗口拉起来；到点后正式轮自己会还原窗口并进入特勤处。
+    /// </summary>
+    internal static bool ShouldPrewarm(DateTimeOffset now, DateTimeOffset prewarmAt,
+        bool alreadyPrewarmed, bool gameWindowFound, bool minimizedGameWindowExists) =>
+        now >= prewarmAt && !alreadyPrewarmed && !gameWindowFound && !minimizedGameWindowExists;
 
     /// <summary>
     /// 预启动时刻：目标前 120 秒，但绝不早于最早一件制造的完成时刻。
