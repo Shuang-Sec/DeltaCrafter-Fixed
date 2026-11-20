@@ -39,7 +39,8 @@ public sealed class ProfitPlanApplier
             string metric = DescribeMetric(plan.Mode);
             string resolved = _host.ResolveCatalogMatchKey(plan.Key, rec.ItemName) ?? "";
             statusItems.Add(
-                $"{FacilityKeys.DisplayName(plan.Key)}={rec.ItemName}({metric})");
+                $"{FacilityKeys.DisplayName(plan.Key)}：{rec.ItemName}（{rec.Profit:N0}"
+                + (plan.Mode == CraftMode.HourlyProfit ? " / 小时）" : " / 次）"));
             if (plan.ItemName == rec.ItemName)
             {
                 // 目录后来收录该物品时补写 OCR 匹配键;解析不出则保留原值,

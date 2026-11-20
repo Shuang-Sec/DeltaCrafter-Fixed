@@ -6,10 +6,8 @@ using Serilog;
 namespace DeltaCrafter.App.Services;
 
 /// <summary>
-/// kkrb.net 行情缓存与利润计划编排。应用启动立即预热,之后每个本地整点刷新,
-/// 与设施模式、启用状态无关;模式切换优先消费最近成功缓存,仅在缓存为空时立即联网。
-/// 抓取在后台线程;计划写入与 UI 刷新回派发队列,并等待当前制造轮结束。
-/// 抓取失败保留旧缓存、亮明原因并按协调器策略重试。
+/// 行情时间与缓存由核心管理，本服务将已验证的快照显示在计划页。
+/// 计划写入回到 UI 线程，并等待当前制造轮结束。
 /// </summary>
 public sealed class ProfitPlanService
 {
@@ -18,18 +16,7 @@ public sealed class ProfitPlanService
     private readonly ILogger _log;
     private readonly DispatcherQueue _dispatcher;
     private readonly ProfitPlanApplier _applier;
-    private readonly SemaphoreSlim _refreshGate = new(1, 1);
-    private int _missingCacheRefreshQueued;
 
-    private sealed record RecommendationCache(
-        ProfitRecommendationSet Recommendations,
-        DateTimeOffset FetchedAt);
-
-    // 缓存与时间必须作为一个不可变快照原子替换,否则模式切换可能读到新数据配旧时间。
-    private RecommendationCache? _latestCache;
-    private string? _lastRefreshError;
-
-    /// <summary>计划页横幅的最近一次刷新结论(UI 线程读写)。</summary>
     public string LastStatus { get; private set; } = "";
 
     public ProfitPlanService(AppHost host, ProfitPlanCoordinator coordinator, ILogger log)
@@ -38,162 +25,111 @@ public sealed class ProfitPlanService
         _coordinator = coordinator;
         _log = log;
         _applier = new ProfitPlanApplier(host, log);
-        // 组合根在 UI 线程构造本服务,借此拿到派发队列(后台循环回 UI 用)。
         _dispatcher = DispatcherQueue.GetForCurrentThread();
     }
 
-    /// <summary>启动立即预热;成功后等下一个整点,失败则 10 分钟重试且不跨过整点。</summary>
     public async Task RunLoopAsync(CancellationToken ct)
     {
         try
         {
-            var nextAttemptAt = DateTimeOffset.Now;
+            bool startup = true;
             while (true)
             {
-                var delay = nextAttemptAt - DateTimeOffset.Now;
-                if (delay > TimeSpan.Zero)
-                    await Task.Delay(delay, ct);
+                bool attempted = await _coordinator.RefreshIfDueAsync(ct);
+                var state = _coordinator.State;
+                var next = _coordinator.NextAttemptAt.ToLocalTime();
+                if (attempted)
+                {
+                    if (state.LastError is { } error)
+                        _log.Warning("利润行情获取失败：{Reason}；{Cache}下次尝试 {Next:yyyy-MM-dd HH:mm:ss}。",
+                            error, state.Latest is null ? "保留当前配方。" : "保留上次行情与当前配方。", next);
+                    else if (state.Latest is { } latest)
+                        _log.Information("利润行情已更新：{Source} 更新于 {MarketAt:yyyy-MM-dd HH:mm:ss}，"
+                            + "本机读取 {FetchedAt:HH:mm:ss}；下次尝试 {Next:yyyy-MM-dd HH:mm:ss}（12 小时后）。",
+                            latest.SourceHost, latest.MarketUpdatedAt.ToLocalTime(), latest.FetchedAt.ToLocalTime(), next);
+                }
+                else if (startup)
+                {
+                    _log.Information("利润行情仍在 12 小时刷新周期内，沿用本机记录；下次尝试 {Next:yyyy-MM-dd HH:mm:ss}。",
+                        next);
+                }
 
-                bool succeeded = await RefreshCacheAsync(onlyIfMissing: false, ct);
-                nextAttemptAt = ProfitPlanCoordinator.NextRefreshAttemptAt(
-                    DateTimeOffset.Now, succeeded);
-                _log.Debug("下次利润行情刷新计划:{Next:yyyy-MM-dd HH:mm:ss}。",
-                    nextAttemptAt);
+                if (startup || attempted)
+                {
+                    if (state.Latest is not null && state.LastError is null && HasProfitFacilities())
+                        await ApplyLatestCacheBetweenRoundsAsync(targetKeys: null, ct);
+                    else
+                        await RunOnUiAsync(() => SetStatus(DescribeMarketState(state)));
+                }
+                startup = false;
+
+                // 分段等待，电脑睡眠唤醒或本地时间改变时也会重新核对到期时间。
+                var delay = _coordinator.NextAttemptAt - DateTimeOffset.UtcNow;
+                if (delay > TimeSpan.Zero)
+                    await Task.Delay(delay < TimeSpan.FromMinutes(1) ? delay : TimeSpan.FromMinutes(1), ct);
             }
         }
-        // 只有应用退出的取消才允许安静收场;其他任何异常终止都大声记下——
-        // 循环无声停摆会让「每个整点更新」变成假承诺。
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { /* 应用退出 */ }
         catch (Exception ex)
         {
-            _log.Error(ex, "利润推荐巡检循环异常终止,自动填充已停止;重启应用可恢复。");
+            _log.Error(ex, "利润行情循环异常终止；重启助手可恢复。");
         }
     }
 
-    /// <summary>设施卡切换制造模式后调用(UI 线程)。利润模式优先应用后台缓存,
-    /// 缓存为空则立即请求;切回自定义仅解除接管并保留当前物品。</summary>
+    /// <summary>切换利润模式直接使用当前快照；所有网络读取均由同一个刷新循环执行。</summary>
     public void OnFacilityModeChanged(FacilityKey key, CraftMode mode)
     {
         if (mode == CraftMode.Custom)
         {
-            _log.Information("{Facility} 已切换为自定义物品,停止自动填充;当前物品保留。",
-                FacilityKeys.DisplayName(key));
+            _log.Information("{Facility} 已切换为自定义物品，恢复原先的选择。", FacilityKeys.DisplayName(key));
             if (!HasProfitFacilities()) SetStatus("");
-            return;
-        }
-        _log.Information("{Facility} 已切换为 {Mode},准备应用最近行情缓存。",
-            FacilityKeys.DisplayName(key), DescribeMetric(mode));
-
-        var cache = Volatile.Read(ref _latestCache);
-        if (cache is null)
-        {
-            SetStatus("行情缓存为空,正在立即获取;成功后会自动应用当前利润模式。");
-            RequestMissingCacheRefresh();
+            else SetStatus(DescribeMarketState(_coordinator.State));
             return;
         }
 
-        SetStatus($"正在应用 {cache.FetchedAt:HH:mm} 行情缓存…");
-        _ = Task.Run(() => ApplyLatestCacheBetweenRoundsAsync(
-            [key], CancellationToken.None));
-    }
-
-    private void RequestMissingCacheRefresh()
-    {
-        // 用户可能连续调整多张卡片。请求只合并、不丢失:在途任务结束后标记归零,
-        // 若仍无缓存,下一次模式切换仍可再次立即请求。
-        if (Interlocked.CompareExchange(ref _missingCacheRefreshQueued, 1, 0) != 0)
+        var state = _coordinator.State;
+        if (state.Latest is null)
+        {
+            SetStatus(DescribeMarketState(state));
             return;
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await RefreshCacheAsync(onlyIfMissing: true, CancellationToken.None);
-            }
-            finally
-            {
-                Volatile.Write(ref _missingCacheRefreshQueued, 0);
-            }
-        });
+        }
+
+        SetStatus($"正在应用行情缓存…\n{DescribeMarketState(state)}");
+        _ = Task.Run(() => ApplyLatestCacheBetweenRoundsAsync([key], CancellationToken.None));
     }
 
-    private bool HasProfitFacilities() =>
-        _host.Plan.Facilities.Any(f => f.Mode != CraftMode.Custom);
+    private bool HasProfitFacilities() => _host.Plan.Facilities.Any(f => f.Mode != CraftMode.Custom);
 
-    /// <summary>
-    /// 所有刷新共用一条执行通道。整点刷新总是联网;模式切换只在缓存仍为空时联网。
-    /// 若启动预热正在进行,模式切换会等待其结论:成功则复用,失败则紧接着再尝试一次。
-    /// </summary>
-    private async Task<bool> RefreshCacheAsync(bool onlyIfMissing, CancellationToken ct)
+    private string DescribeMarketState(ProfitMarketState state)
     {
-        await _refreshGate.WaitAsync(ct);
-        try
-        {
-            if (onlyIfMissing && Volatile.Read(ref _latestCache) is not null)
-                return true;
-            return await TryRefreshCacheCoreAsync(ct);
-        }
-        finally
-        {
-            _refreshGate.Release();
-        }
+        if (state.LastAttemptAt is null) return "正在读取首次行情；取得推荐前保留当前配方。";
+        string next = $"下次读取：{_coordinator.NextAttemptAt.ToLocalTime():MM-dd HH:mm}。";
+        if (state.Latest is not { } latest)
+            return $"当前无可用行情：{state.LastError} 保留当前配方。{next}";
+
+        string times = $"行情来源：{latest.SourceHost}；上游 {latest.MarketUpdatedAt.ToLocalTime():MM-dd HH:mm} 更新"
+            + $"，本机 {latest.FetchedAt.ToLocalTime():MM-dd HH:mm} 读取。{next}";
+        return state.LastError is null
+            ? times
+            : $"最近刷新失败：{state.LastError} 以下为上次可用行情。\n{times}";
     }
 
-    /// <summary>执行一次网络抓取;返回值只表示行情是否成功取得。</summary>
-    private async Task<bool> TryRefreshCacheCoreAsync(CancellationToken ct)
-    {
-        try
-        {
-            var recommendations = await _coordinator.FetchRecommendationsAsync(ct);
-            var completedAt = DateTimeOffset.Now;
-            var cache = new RecommendationCache(recommendations, completedAt);
-            Volatile.Write(ref _latestCache, cache);
-            Volatile.Write(ref _lastRefreshError, null);
-            _log.Information("利润行情缓存已更新({Time:HH:mm}),下次正常刷新在下一个整点。",
-                completedAt);
-
-            // 缓存发布不等待制造轮;只有计划写入需要执行闸门。即使当前全部为自定义,
-            // 行情也已经可供稍后的模式切换立即使用。
-            if (HasProfitFacilities())
-                await ApplyLatestCacheBetweenRoundsAsync(targetKeys: null, ct);
-            return true;
-        }
-        // 砖内超时已翻译为 TimeoutException;此过滤只放行「调用方令牌真被取消」的
-        // 取消异常(应用退出),其余取消异常一律按普通失败告警,防循环被静默杀死。
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-        {
-            string cacheState = Volatile.Read(ref _latestCache) is null
-                ? "当前没有可用缓存。"
-                : "继续使用最近一次成功缓存。";
-            string error = $"{DateTimeOffset.Now:HH:mm} 获取失败:{ex.Message}";
-            Volatile.Write(ref _lastRefreshError, error);
-            _log.Warning("利润行情获取失败:{Reason}(10 分钟后或下一整点重试)。",
-                ex.Message);
-            _dispatcher.TryEnqueue(() =>
-                SetStatus($"{error} 将自动重试,{cacheState}"));
-            return false;
-        }
-    }
-
-    /// <summary>等待当前制造轮结束后,在 UI 线程应用指定缓存;应用失败不伪装成抓取失败。</summary>
     private async Task ApplyLatestCacheBetweenRoundsAsync(
-        IReadOnlyCollection<FacilityKey>? targetKeys,
-        CancellationToken ct)
+        IReadOnlyCollection<FacilityKey>? targetKeys, CancellationToken ct)
     {
         try
         {
             await _host.Coordinator.RunBetweenRoundsAsync(
                 () => RunOnUiAsync(() =>
                 {
-                    // 模式切换与整点刷新可能同时排队。真正取得执行闸门后必须重读最新
-                    // 快照,防止较早排队的任务在新行情之后反向覆盖计划。
-                    var latest = Volatile.Read(ref _latestCache)
-                        ?? throw new InvalidOperationException("利润行情缓存意外丢失。");
-                    string status = _applier.Apply(
-                        latest.Recommendations,
-                        latest.FetchedAt,
-                        targetKeys,
-                        Volatile.Read(ref _lastRefreshError));
-                    SetStatus(status);
+                    // 取得闸门后读取当前快照和模式，避免较早排队的操作覆盖新行情或自定义选择。
+                    var state = _coordinator.State;
+                    if (!HasProfitFacilities() || state.Latest is not { } latest) return;
+                    string applied = _applier.Apply(latest.Recommendations, latest.FetchedAt.ToLocalTime(),
+                        targetKeys, refreshError: null);
+                    SetStatus(string.IsNullOrEmpty(applied)
+                        ? DescribeMarketState(state)
+                        : $"{DescribeMarketState(state)}\n{applied}");
                 }), ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -202,19 +138,10 @@ public sealed class ProfitPlanService
         }
         catch (Exception ex)
         {
-            _log.Error(ex, "行情缓存已取得,但写入制造计划失败。");
-            _dispatcher.TryEnqueue(() =>
-                SetStatus($"行情缓存已取得,但写入制造计划失败:{ex.Message}"));
+            _log.Error(ex, "行情缓存已取得，但写入制造计划失败。");
+            _dispatcher.TryEnqueue(() => SetStatus($"行情缓存已取得，但写入制造计划失败：{ex.Message}"));
         }
     }
-
-    private static string DescribeMetric(CraftMode mode) => mode switch
-    {
-        CraftMode.HourlyProfit => "每小时利润最高",
-        CraftMode.TotalProfit => "总利润最高",
-        CraftMode.Custom => throw new InvalidOperationException("自定义制造模式没有利润口径。"),
-        _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "未知制造模式。"),
-    };
 
     private Task RunOnUiAsync(Action action)
     {
@@ -231,11 +158,10 @@ public sealed class ProfitPlanService
                     completion.SetException(ex);
                 }
             }))
-            throw new InvalidOperationException("应用界面派发队列不可用,利润推荐未写入计划。");
+            throw new InvalidOperationException("应用界面派发队列不可用，利润推荐未写入计划。");
         return completion.Task;
     }
 
-    /// <summary>更新横幅结论并通知计划页(调用方保证在 UI 线程)。</summary>
     private void SetStatus(string status)
     {
         LastStatus = status;

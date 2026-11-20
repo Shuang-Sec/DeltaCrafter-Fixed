@@ -11,7 +11,7 @@ namespace DeltaCrafter.Core.Tests;
 public class DeepCountdownPipelineTests
 {
     [Theory]
-    [InlineData(false, 3)]
+    [InlineData(false, 4)]
     [InlineData(true, 4)]
     public async Task Exhausted_candidates_return_the_primary_without_inventing_a_duration(bool detail, int expectedCalls)
     {
@@ -25,6 +25,64 @@ public class DeepCountdownPipelineTests
         Assert.Equal(expectedCalls, calls);
         Assert.Equal("原始损坏读数", reading.Text);
         Assert.Null(reading.Remaining);
+    }
+
+    [Fact]
+    public async Task Overview_recovers_real_armor_timer_from_unmodified_frame_when_enhancements_lose_digits()
+    {
+        var calls = new List<(int?, double)>();
+        var reading = await ScreenProbe.ReadCountdownCandidatesAsync(false, (threshold, scale) =>
+        {
+            calls.Add((threshold, scale));
+            return Task.FromResult(threshold switch
+            {
+                150 => "03 ： 3 12 -",
+                80 => "",
+                130 => "03 ： 3 & 12 一",
+                null => "03 ： 38 ： 12",
+                _ => throw new InvalidOperationException(),
+            });
+        });
+
+        Assert.Equal(new TimeSpan(3, 38, 12), reading.Remaining);
+        Assert.Equal(new (int?, double)[] { (150, 2), (80, 3), (130, 2), (null, 2) }, calls);
+    }
+
+    [Fact]
+    public async Task Recoverable_primary_keeps_its_existing_priority_over_unmodified_fallback()
+    {
+        var calls = new List<(int?, double)>();
+        var reading = await ScreenProbe.ReadCountdownCandidatesAsync(false, (threshold, scale) =>
+        {
+            calls.Add((threshold, scale));
+            return Task.FromResult(threshold switch
+            {
+                150 => "0J58：09",
+                null => "01:58:09",
+                _ => "",
+            });
+        });
+        Assert.Equal("0J58：09", reading.Text);
+        Assert.Null(reading.Remaining);
+        Assert.Equal(3, calls.Count);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("03：3&：12")]
+    [InlineData("03：3：12")]
+    [InlineData("03：60：12")]
+    [InlineData("03：38：60")]
+    [InlineData("903：38：12")]
+    [InlineData("03：38：12-")]
+    [InlineData("5．45×39mm BT")]
+    [InlineData("033812")]
+    public async Task Overview_unmodified_fallback_rejects_incomplete_or_non_timer_text(string raw)
+    {
+        var reading = await ScreenProbe.ReadCountdownCandidatesAsync(false,
+            (threshold, _) => Task.FromResult(threshold is null ? raw : "03：312-"));
+        Assert.Null(reading.Remaining);
+        Assert.Equal("03：312-", reading.Text);
     }
 
     [Theory]

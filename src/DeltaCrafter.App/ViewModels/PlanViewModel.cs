@@ -42,6 +42,8 @@ public sealed class PlanFacilityModel : ObservableObject
         get => _plan.ItemName;
         set
         {
+            // 切换到利润模式时，搜索框会禁用并可能补发失焦事件；此时不能保存旧文本。
+            if (!ItemEditable) return;
             string itemName = value ?? "";
             // 显示名与匹配名分离:目录里能对上的,写入其 OCR 匹配键;手填目录外名称则留空。
             string matchName = _resolveMatchName(itemName) ?? "";
@@ -143,7 +145,7 @@ public sealed partial class PlanViewModel : ObservableObject
     {
         get
         {
-            const string baseText = "行情在应用启动后预热并于每个整点后台更新;选择利润模式时优先使用最近缓存,缓存为空则立即获取;自定义物品的设施仍可手选。";
+            const string baseText = "行情每 12 小时更新一次；切换利润模式时使用已有行情，推荐用于下次制造。";
             string status = _host.ProfitPlan.LastStatus;
             return status.Length > 0 ? baseText + "\n" + status : baseText;
         }

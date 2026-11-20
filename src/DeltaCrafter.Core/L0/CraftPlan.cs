@@ -36,7 +36,7 @@ public static class FacilityKeys
 }
 
 /// <summary>
-/// 单个设施的制造物品选择方式。利润模式由 kkrb.net 推荐自动填充,
+/// 单个设施的制造物品选择方式。利润模式由国服制造行情自动填充,
 /// 自定义模式允许用户在计划页手选物品。
 /// </summary>
 public enum CraftMode

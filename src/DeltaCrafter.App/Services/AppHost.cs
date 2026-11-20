@@ -112,7 +112,8 @@ public sealed class AppHost : ICatalogSink, ICatalogLookup, IAppWindowGuard
         PlanVm = new PlanViewModel(this);
         LogVm = new LogViewModel(this);
         // 服务在 VM 之后构造(应用推荐时要刷新 PlanVm),循环随调度循环一起启动。
-        ProfitPlan = new ProfitPlanService(this, new ProfitPlanCoordinator(), Log);
+        ProfitPlan = new ProfitPlanService(this,
+            new ProfitPlanCoordinator(Path.Combine(Paths.Root, "profit-market.json"), Store, Log), Log);
 
         _ = Task.Run(() => Coordinator.RunSchedulerLoopAsync(_appStop.Token));
         _ = Task.Run(() => ProfitPlan.RunLoopAsync(_appStop.Token));

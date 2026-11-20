@@ -640,6 +640,18 @@ public sealed partial class ScreenProbe
                     Normalize(raw), @"^[0-9]{2}[:：．，][0-5][0-9][:：．，][0-5][0-9]$")) continue;
             return new CountdownOcrReadout(raw, remaining);
         }
+        // 实测总览防具台 03:38:12 在阈值150/2x 丢失分钟数字，阈值80/3x读空，
+        // 阈值130/2x将8误读为&；未处理的同帧2x则读出完整时分秒。
+        // 保留已有主候选归一化的优先级，只有主候选也无法还原时才尝试原图，
+        // 且原图备用只接受完整两位时分秒，不猜测丢失数字或折叠形近字。
+        if (!labelledDetail && !SlotTimerCanonicalizer.TryCanonicalize(primary, out _))
+        {
+            string raw = await readCandidate(null, 2);
+            if (System.Text.RegularExpressions.Regex.IsMatch(Normalize(raw),
+                    @"^[0-9]{2}[:：．，][0-5][0-9][:：．，][0-5][0-9]$") &&
+                TryParseCountdownReadout(raw, false, out var remaining))
+                return new CountdownOcrReadout(raw, remaining);
+        }
         return new CountdownOcrReadout(primary, null);
     }
 

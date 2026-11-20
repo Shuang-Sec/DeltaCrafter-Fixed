@@ -123,6 +123,7 @@ public class ProfitAdvisorBrickTests
     [Theory]
     [InlineData("""{"itemName":"物品A"}""")]
     [InlineData("""{"itemName":"物品A","profit":"暂无"}""")]
+    [InlineData("""{"itemName":"物品A","profit":1e999}""")]
     public void Missing_or_non_numeric_profit_field_throws(string totalTech)
     {
         var ex = Assert.Throws<InvalidOperationException>(() =>
@@ -143,7 +144,7 @@ public class ProfitAdvisorBrickTests
             r => r.Facility == FacilityKey.TechCenter).Profit);
     }
 
-    /// <summary>可编程传输桩:验证抓取管线的超时/取消/握手行为,不出网络。</summary>
+    /// <summary>可编程传输桩：验证公开行情的抓取管线，不访问网络。</summary>
     private sealed class StubHandler(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> respond) : HttpMessageHandler
     {
@@ -152,8 +153,9 @@ public class ProfitAdvisorBrickTests
     }
 
     private static ProfitAdvisorBrick Brick(
-        TimeSpan timeout, Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> respond) =>
-        new(timeout, () => new StubHandler(respond));
+        TimeSpan timeout, Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> respond,
+        Func<TimeSpan, CancellationToken, Task>? delay = null) =>
+        new(timeout, () => new StubHandler(respond), delay);
 
     private static async Task<HttpResponseMessage> HangForever(HttpRequestMessage _, CancellationToken ct)
     {
@@ -166,7 +168,7 @@ public class ProfitAdvisorBrickTests
     {
         // 内部限时到点若原样抛取消异常,调用方会误判为应用退出而静默吞掉,
         // 巡检循环被永久杀死——必须翻译成 TimeoutException 走正常告警重试路径。
-        var brick = Brick(TimeSpan.FromMilliseconds(100), HangForever);
+        var brick = Brick(TimeSpan.FromMilliseconds(100), HangForever, (_, _) => Task.CompletedTask);
         await Assert.ThrowsAsync<TimeoutException>(
             () => brick.FetchRecommendationsAsync(CancellationToken.None));
     }
@@ -182,20 +184,20 @@ public class ProfitAdvisorBrickTests
     }
 
     [Fact]
-    public async Task Full_handshake_success_returns_recommendations()
+    public async Task Public_status_and_overview_return_both_complete_rankings_without_a_session()
     {
         var paths = new List<string>();
         var brick = Brick(TimeSpan.FromSeconds(30), (req, _) =>
         {
             paths.Add(req.RequestUri!.AbsolutePath);
-            if (req.Method == HttpMethod.Post)
-                Assert.Contains("XMLHttpRequest", req.Headers.GetValues("X-Requested-With"));
+            Assert.Equal(HttpMethod.Get, req.Method);
+            Assert.Equal("dfapi1.eleven.icu", req.RequestUri.Host);
+            Assert.False(req.Headers.Contains("Cookie"));
+            Assert.False(req.Headers.Contains("Authorization"));
             string body = req.RequestUri!.AbsolutePath switch
             {
-                "/" => "<html>overview</html>",
-                "/getMenu" => """{"code":1,"menu":[]}""",
-                "/checkUAStatus" => """{"code":1,"msg":"success"}""",
-                "/getOVData" => SampleJson(),
+                "/status" => SourceStatus(DateTimeOffset.UtcNow),
+                "/getOVData" => SampleJson().Replace("\"code\":1,", ""),
                 _ => throw new InvalidOperationException("unexpected " + req.RequestUri),
             };
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
@@ -206,7 +208,67 @@ public class ProfitAdvisorBrickTests
         var set = await brick.FetchRecommendationsAsync(CancellationToken.None);
         Assert.Equal(4, set.TotalProfitRecommendations.Count);
         Assert.Equal(4, set.HourlyProfitRecommendations.Count);
-        Assert.Equal(new[] { "/", "/getMenu", "/checkUAStatus", "/getOVData" }, paths);
+        Assert.Equal(new[] { "/status", "/getOVData" }, paths);
+        Assert.Equal("幻影垂直握把", set.ForFacility(FacilityKey.TechCenter, CraftMode.HourlyProfit).ItemName);
+        Assert.Equal("灵眼3/7测距狙击瞄准镜", set.ForFacility(FacilityKey.TechCenter, CraftMode.TotalProfit).ItemName);
+    }
+
+    [Fact]
+    public async Task Stale_source_status_is_rejected_before_reading_the_rankings()
+    {
+        var brick = Brick(TimeSpan.FromSeconds(30), (req, _) =>
+        {
+            Assert.Equal("/status", req.RequestUri!.AbsolutePath);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(SourceStatus(DateTimeOffset.UtcNow.AddHours(-13))),
+            });
+        });
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            brick.FetchRecommendationsAsync(CancellationToken.None));
+        Assert.Contains("过期", ex.Message);
+    }
+
+    private static string SourceStatus(DateTimeOffset at) =>
+        JsonSerializer.Serialize(new { status = "success", has_data = true, last_update = at.ToUnixTimeSeconds() + 0.5 });
+
+    [Theory]
+    [InlineData(HttpStatusCode.ServiceUnavailable, 2, "dfapi.eleven.icu")]
+    [InlineData(HttpStatusCode.TooManyRequests, 20, "dfapi1.eleven.icu")]
+    public async Task Transient_failures_retry_once_with_the_expected_host_and_backoff(
+        HttpStatusCode initialFailure, int backoffSeconds, string secondHost)
+    {
+        var visits = new List<string>();
+        var delays = new List<TimeSpan>();
+        var brick = Brick(TimeSpan.FromSeconds(30), (req, _) =>
+        {
+            var uri = req.RequestUri!;
+            visits.Add(uri.Host + uri.AbsolutePath);
+            return Task.FromResult(visits.Count == 1 ? new HttpResponseMessage(initialFailure)
+                : new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(uri.AbsolutePath == "/status"
+                        ? SourceStatus(DateTimeOffset.UtcNow) : SampleJson()),
+                });
+        }, (delay, _) => { delays.Add(delay); return Task.CompletedTask; });
+
+        var snapshot = await brick.FetchSnapshotAsync(CancellationToken.None);
+        Assert.Equal(secondHost, snapshot.SourceHost);
+        Assert.Equal(new[] { TimeSpan.FromSeconds(backoffSeconds) }, delays);
+        Assert.Equal(new[] { "dfapi1.eleven.icu/status", secondHost + "/status", secondHost + "/getOVData" }, visits);
+    }
+
+    [Fact]
+    public async Task Unavailable_mirror_does_not_retry_indefinitely()
+    {
+        int requests = 0;
+        var brick = Brick(TimeSpan.FromSeconds(30), (_, _) =>
+        {
+            requests++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        }, (_, _) => Task.CompletedTask);
+        await Assert.ThrowsAsync<HttpRequestException>(() => brick.FetchSnapshotAsync(CancellationToken.None));
+        Assert.Equal(2, requests);
     }
 
     [Fact]
@@ -220,6 +282,6 @@ public class ProfitAdvisorBrickTests
             }));
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => brick.FetchRecommendationsAsync(CancellationToken.None));
-        Assert.Contains("getMenu", ex.Message);
+        Assert.Contains("/status", ex.Message);
     }
 }

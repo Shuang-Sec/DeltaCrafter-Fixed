@@ -5,23 +5,14 @@ using DeltaCrafter.Core.L0;
 namespace DeltaCrafter.Core.L1;
 
 /// <summary>
-/// 制造利润推荐能力:从 kkrb.net「热点内容一图流」页的数据接口读取
-/// 「特勤处制作产物推荐」,得到四个设施各自的推荐物品与两种利润口径。
-/// 约束:任何一步失败(网络、反爬拦截、字段缺失)都带上下文抛出,由调用方
-/// 决定呈现方式;本类不做静默降级,也不返回不完整的推荐列表。
-/// 内部限时到点抛 TimeoutException 而非取消异常——调用方以取消语义判断
-/// 「是否应用退出」,超时必须能走正常的告警与重试路径。
+/// 从 DFMInfo 公布的只读国服行情接口取得四个设施的两种利润排名。
+/// 先校验上游行情时间，再读取完整排行；超时、缺数据或过期的答复都不发布。
 /// </summary>
 public sealed class ProfitAdvisorBrick
 {
-    private const string BaseUrl = "https://www.kkrb.net";
-    private const string OverviewPage = BaseUrl + "/?viewpage=view%2Foverview";
-
-    // 站点服务端校验 UA 与 XHR 头(checkUAStatus),非浏览器形态的请求一律拒绝
-    // (返回 code=-101)。此 UA 与实测放行的桌面 Chrome 一致,不含个人信息。
-    private const string UserAgent =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
-        "Chrome/126.0.0.0 Safari/537.36";
+    private const string PrimaryHost = "dfapi1.eleven.icu";
+    private const string BackupHost = "dfapi.eleven.icu";
+    private static readonly TimeSpan MaxSourceAge = TimeSpan.FromHours(3);
 
     /// <summary>推荐分组内的网站设施键 → 本项目设施键。四个键必须全部出现。</summary>
     private static readonly (string Key, FacilityKey Facility)[] FacilityMap =
@@ -34,113 +25,103 @@ public sealed class ProfitAdvisorBrick
 
     private readonly TimeSpan _timeout;
     private readonly Func<HttpMessageHandler>? _handlerFactory;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
 
-    public ProfitAdvisorBrick() : this(TimeSpan.FromSeconds(60), handlerFactory: null) { }
+    public ProfitAdvisorBrick() : this(TimeSpan.FromSeconds(20), handlerFactory: null) { }
 
-    /// <summary>测试注入口:缩短限时、替换传输层。生产代码只用默认构造。</summary>
-    internal ProfitAdvisorBrick(TimeSpan timeout, Func<HttpMessageHandler>? handlerFactory)
+    /// <summary>测试可替换传输与等待时间，以复现 429、超时和故障转移。</summary>
+    internal ProfitAdvisorBrick(TimeSpan timeout, Func<HttpMessageHandler>? handlerFactory,
+        Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
         _timeout = timeout;
         _handlerFactory = handlerFactory;
+        _delay = delay ?? Task.Delay;
     }
 
-    /// <summary>
-    /// 抓取当前推荐。会话按实测放行序列建立:首页(取 PHPSESSID)→ getMenu
-    /// (下发 csrf_token)→ checkUAStatus(标记会话已验证)→ getOVData(取数据)。
-    /// 每次抓取用全新会话,避免服务端会话过期造成难排查的间歇失败。
-    /// </summary>
-    public async Task<ProfitRecommendationSet> FetchRecommendationsAsync(CancellationToken ct)
+    public async Task<ProfitRecommendationSet> FetchRecommendationsAsync(CancellationToken ct) =>
+        (await FetchSnapshotAsync(ct)).Recommendations;
+
+    /// <summary>通常读取一次状态和排行；一次失败最多追加一次尝试。</summary>
+    internal async Task<ProfitMarketSnapshot> FetchSnapshotAsync(CancellationToken ct)
+    {
+        using var handler = _handlerFactory?.Invoke()
+            ?? new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false };
+        using var http = new HttpClient(handler, disposeHandler: false)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        try
+        {
+            return await FetchHostAsync(http, PrimaryHost, ct);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            // 限流属于同一服务，等待后只重试原地址。
+            await _delay(TimeSpan.FromSeconds(20), ct);
+            return await FetchHostAsync(http, PrimaryHost, ct);
+        }
+        catch (Exception ex) when (ex is TimeoutException ||
+            ex is HttpRequestException httpError &&
+            (httpError.StatusCode is null || (int)httpError.StatusCode.Value >= 500))
+        {
+            await _delay(TimeSpan.FromSeconds(2), ct);
+            return await FetchHostAsync(http, BackupHost, ct);
+        }
+    }
+
+    private async Task<ProfitMarketSnapshot> FetchHostAsync(HttpClient http, string host, CancellationToken ct)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(_timeout);
         try
         {
-            return await FetchCoreAsync(cts.Token);
+            using var status = await GetJsonAsync(http, host, "/status", cts.Token);
+            var updatedAt = ParseSourceUpdatedAt(status.RootElement, DateTimeOffset.UtcNow);
+            using var data = await GetJsonAsync(http, host, "/getOVData", cts.Token);
+            return new ProfitMarketSnapshot(
+                ParseOverviewData(data.RootElement), updatedAt, DateTimeOffset.UtcNow, host);
         }
-        // 内部限时与外部取消抛的都是取消异常,类型上不可区分;仅当调用方令牌
-        // 未取消(即超时是本类自己触发的)才翻译成超时异常。
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            throw new TimeoutException(
-                $"获取利润推荐超时({(int)_timeout.TotalSeconds} 秒),请检查网络后重试。");
+            throw new TimeoutException($"行情接口 {host} 在 {_timeout.TotalSeconds:0} 秒内没有响应。");
         }
     }
 
-    private async Task<ProfitRecommendationSet> FetchCoreAsync(CancellationToken ct)
+    private static async Task<JsonDocument> GetJsonAsync(
+        HttpClient http, string host, string path, CancellationToken ct)
     {
-        var cookies = new CookieContainer();
-        using var handler = _handlerFactory?.Invoke()
-            ?? new HttpClientHandler { CookieContainer = cookies, UseCookies = true };
-        using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
-        http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", UserAgent);
-
-        using (var page = await http.GetAsync(OverviewPage, ct))
-        {
-            if (!page.IsSuccessStatusCode)
-                throw new InvalidOperationException(
-                    $"访问推荐数据站点失败:HTTP {(int)page.StatusCode}。请检查网络后重试。");
-        }
-
-        (await PostApiAsync(http, cookies, "getMenu", "globalData=false", ct)).Dispose();
-        (await PostApiAsync(http, cookies, "checkUAStatus", body: null, ct)).Dispose();
-        using var data = await PostApiAsync(http, cookies, "getOVData", "globalData=false", ct);
-        return ParseOverviewData(data.RootElement);
-    }
-
-    /// <summary>POST 站点接口并校验业务码。非 JSON 响应(风控挑战页)与 code≠1
-    /// 都带接口名抛出;返回的 JsonDocument 由调用方负责释放。</summary>
-    private static async Task<JsonDocument> PostApiAsync(
-        HttpClient http, CookieContainer cookies, string endpoint, string? body, CancellationToken ct)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/{endpoint}");
-        // 服务端以 XHR 头区分页面脚本请求;csrf_token 由 getMenu 下发,后续请求须回传同值头。
-        request.Headers.TryAddWithoutValidation("X-Requested-With", "XMLHttpRequest");
-        request.Headers.TryAddWithoutValidation("Referer", OverviewPage);
-        request.Headers.TryAddWithoutValidation("Origin", BaseUrl);
-        string? csrf = cookies.GetCookies(new Uri(BaseUrl))["csrf_token"]?.Value;
-        if (csrf is not null)
-            request.Headers.TryAddWithoutValidation("X-CSRF-Token", csrf);
-        if (body is not null)
-            request.Content = new StringContent(body, System.Text.Encoding.UTF8,
-                "application/x-www-form-urlencoded");
-
-        using var response = await http.SendAsync(request, ct);
+        using var response = await http.GetAsync($"https://{host}{path}",
+            HttpCompletionOption.ResponseHeadersRead, ct);
         if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException(
-                $"推荐数据接口 {endpoint} 失败:HTTP {(int)response.StatusCode}。");
+            throw new HttpRequestException($"行情接口 {host}{path} 返回 HTTP {(int)response.StatusCode}。",
+                null, response.StatusCode);
 
-        string text = await response.Content.ReadAsStringAsync(ct);
-        JsonDocument json;
         try
         {
-            json = JsonDocument.Parse(text);
+            using var stream = await response.Content.ReadAsStreamAsync(ct);
+            return await JsonDocument.ParseAsync(stream, cancellationToken: ct);
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            throw new InvalidOperationException(
-                $"推荐数据接口 {endpoint} 返回了无法解析的内容,可能被站点风控拦截,请稍后重试。");
+            throw new InvalidOperationException($"行情接口 {host}{path} 未返回有效 JSON。", ex);
         }
-        try
-        {
-            if (!json.RootElement.TryGetProperty("code", out var codeProp)
-                || codeProp.ValueKind != JsonValueKind.Number)
-                throw new InvalidOperationException(
-                    $"推荐数据接口 {endpoint} 响应缺少业务码,站点接口可能已变化。");
-            int code = codeProp.GetInt32();
-            if (code != 1)
-            {
-                string msg = json.RootElement.TryGetProperty("msg", out var m)
-                    ? m.GetString() ?? "" : "";
-                throw new InvalidOperationException(
-                    $"推荐数据接口 {endpoint} 返回 code={code}({msg}),可能被站点风控拦截,请稍后重试。");
-            }
-            return json;
-        }
-        catch
-        {
-            json.Dispose();
-            throw;
-        }
+    }
+
+    private static DateTimeOffset ParseSourceUpdatedAt(JsonElement status, DateTimeOffset now)
+    {
+        if (status.ValueKind != JsonValueKind.Object
+            || !status.TryGetProperty("status", out var result) || result.ValueKind != JsonValueKind.String
+            || result.GetString() != "success"
+            || !status.TryGetProperty("has_data", out var hasData) || hasData.ValueKind != JsonValueKind.True
+            || !status.TryGetProperty("last_update", out var stamp) || stamp.ValueKind != JsonValueKind.Number
+            || !stamp.TryGetDouble(out double seconds) || !double.IsFinite(seconds) || seconds <= 0
+            || seconds > now.AddMinutes(5).ToUnixTimeSeconds())
+            throw new InvalidOperationException("行情站点没有提供有效的更新时间或可用数据。");
+
+        var updatedAt = DateTimeOffset.FromUnixTimeSeconds((long)seconds);
+        if (now - updatedAt > MaxSourceAge)
+            throw new InvalidOperationException($"行情源数据已过期（上游 {updatedAt.ToLocalTime():MM-dd HH:mm} 更新）。");
+        return updatedAt;
     }
 
     /// <summary>
@@ -150,7 +131,7 @@ public sealed class ProfitAdvisorBrick
     /// </summary>
     internal static ProfitRecommendationSet ParseOverviewData(JsonElement root)
     {
-        if (!root.TryGetProperty("data", out var data)
+        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("data", out var data)
             || data.ValueKind != JsonValueKind.Object)
             throw new InvalidOperationException("推荐数据缺少 data 字段,站点数据结构可能已变化。");
 
@@ -170,22 +151,21 @@ public sealed class ProfitAdvisorBrick
         var result = new List<ProfitRecommendation>(FacilityMap.Length);
         foreach (var (key, facility) in FacilityMap)
         {
-            if (!group.TryGetProperty(key, out var entry))
+            if (!group.TryGetProperty(key, out var entry) || entry.ValueKind != JsonValueKind.Object)
                 throw new InvalidOperationException(
                     $"{metricName}推荐缺少设施「{FacilityKeys.DisplayName(facility)}」({key}),拒绝按残缺数据改计划。");
-            string itemName = entry.TryGetProperty("itemName", out var n)
+            string itemName = entry.TryGetProperty("itemName", out var n) && n.ValueKind == JsonValueKind.String
                 ? n.GetString()?.Trim() ?? "" : "";
             if (itemName.Length == 0)
                 throw new InvalidOperationException(
                     $"{metricName}推荐中「{FacilityKeys.DisplayName(facility)}」缺少物品名,站点数据结构可能已变化。");
 
-            double? profit = entry.TryGetProperty("profit", out var p)
-                && p.ValueKind == JsonValueKind.Number ? p.GetDouble() : null;
-            if (profit is null)
+            if (!entry.TryGetProperty("profit", out var p) || p.ValueKind != JsonValueKind.Number
+                || !p.TryGetDouble(out double profit) || !double.IsFinite(profit))
                 throw new InvalidOperationException(
                     $"{metricName}推荐中「{FacilityKeys.DisplayName(facility)}」缺少数值 profit 字段,站点数据结构可能已变化。");
 
-            result.Add(new ProfitRecommendation(facility, itemName, profit.Value));
+            result.Add(new ProfitRecommendation(facility, itemName, profit));
         }
         return result.AsReadOnly();
     }
