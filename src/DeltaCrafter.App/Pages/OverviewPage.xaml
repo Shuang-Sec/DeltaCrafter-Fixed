@@ -74,6 +74,15 @@
                                 <TextBlock Text="{x:Bind Vm.NextRunText, Mode=OneWay}"
                                            Style="{StaticResource NumericTextStyle}" />
                             </StackPanel>
+                            <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center"
+                                        Visibility="{x:Bind Vm.LastRunSuccessVisibility, Mode=OneWay}">
+                                <TextBlock Text="上次执行" Style="{StaticResource SecondaryTextStyle}" />
+                                <TextBlock Text="{x:Bind Vm.LastRunSummary, Mode=OneWay}"
+                                           Style="{StaticResource SecondaryTextStyle}"
+                                           TextWrapping="Wrap" MaxLines="2"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTipService.ToolTip="{x:Bind Vm.LastRunSummary, Mode=OneWay}" />
+                            </StackPanel>
                             <InfoBar Grid.Column="1"
                                      IsOpen="{x:Bind Vm.LastRunFailed, Mode=OneWay}"
                                      Severity="Error"

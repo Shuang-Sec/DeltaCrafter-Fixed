@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.Input;
 using DeltaCrafter.App.Services;
 using DeltaCrafter.Core.L0;
 using DeltaCrafter.Core.L1;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 
@@ -17,6 +18,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 {
     private readonly AppHost _host;
     private readonly ThemeService _theme;
+    private readonly DispatcherQueue _dq = DispatcherQueue.GetForCurrentThread();
     private bool _autostartEnabled;
 
     [ObservableProperty]
@@ -25,6 +27,8 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     [ObservableProperty] private string gamePath;
     [ObservableProperty] private string windowRuleText;
+    [ObservableProperty] private string shotsStorageText = "正在统计诊断截图占用…";
+    [ObservableProperty] private bool isCleaningShots;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CheckingRingVisibility))]
@@ -51,6 +55,43 @@ public sealed partial class SettingsViewModel : ObservableObject
         windowRuleText = DescribeRule();
         try { _autostartEnabled = host.Autostart.IsEnabled(); }
         catch (Exception ex) { AutostartError = ex.Message; }
+        _ = RefreshShotsStorageAsync();
+    }
+
+    /// <summary>后台统计诊断截图占用并在 UI 线程刷新文案，不阻塞设置页打开。</summary>
+    public async Task RefreshShotsStorageAsync(string? prefix = null)
+    {
+        var stats = await Task.Run(() => ShotRetention.Inspect(_host.Paths.ShotsDir));
+        double mb = stats.TotalBytes / (1024.0 * 1024.0);
+        string summary = stats.FileCount == 0
+            ? $"当前无诊断截图 · 自动保留最近 {ShotRetention.DefaultMaxAgeDays} 天 / {ShotRetention.DefaultMaxRetainedGroups} 组"
+            : $"当前 {stats.FileCount} 个文件（{stats.GroupCount} 组，约 {mb:0.1} MB）· 自动保留最近 {ShotRetention.DefaultMaxAgeDays} 天 / {ShotRetention.DefaultMaxRetainedGroups} 组";
+        string text = string.IsNullOrEmpty(prefix) ? summary : prefix + summary;
+        _dq.TryEnqueue(() => ShotsStorageText = text);
+    }
+
+    [RelayCommand]
+    private async Task PruneShotsAsync()
+    {
+        if (IsCleaningShots) return;
+        IsCleaningShots = true;
+        try
+        {
+            int removed = await Task.Run(() => ShotRetention.TryPruneCount(_host.Paths.ShotsDir, _host.Log));
+            string prefix = removed > 0 ? $"已清理 {removed} 个过期文件 · " : "无过期截图 · ";
+            await RefreshShotsStorageAsync(prefix);
+        }
+        finally
+        {
+            IsCleaningShots = false;
+        }
+    }
+
+    [RelayCommand]
+    private void OpenShotsFolder()
+    {
+        Directory.CreateDirectory(_host.Paths.ShotsDir);
+        Process.Start(new ProcessStartInfo { FileName = _host.Paths.ShotsDir, UseShellExecute = true });
     }
 
     private AppSettings S => _host.Settings;

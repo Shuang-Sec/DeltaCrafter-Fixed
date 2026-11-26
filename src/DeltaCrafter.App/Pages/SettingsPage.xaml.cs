@@ -3,6 +3,7 @@ using DeltaCrafter.App.ViewModels;
 using DeltaCrafter.Core.L1;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Navigation;
 
 namespace DeltaCrafter.App.Pages;
 
@@ -11,6 +12,12 @@ public sealed partial class SettingsPage : Page
     public SettingsViewModel Vm { get; } = AppHost.Current.SettingsVm;
 
     public SettingsPage() => InitializeComponent();
+
+    protected override void OnNavigatedTo(NavigationEventArgs e)
+    {
+        base.OnNavigatedTo(e);
+        _ = Vm.RefreshShotsStorageAsync();
+    }
 
     /// <summary>
     /// 定位游戏窗口:列出候选窗口让用户点选,把标题+类名固化为匹配规则。

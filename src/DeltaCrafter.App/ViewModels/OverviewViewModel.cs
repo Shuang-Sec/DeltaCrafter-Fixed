@@ -32,8 +32,13 @@ public sealed partial class OverviewViewModel : ObservableObject
     [ObservableProperty] private string runStateDetail = "";
     [ObservableProperty] private string nextRunText = "—";
     [ObservableProperty] private bool isRunning;
-    [ObservableProperty] private bool lastRunFailed;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LastRunSuccessVisibility))]
+    private bool lastRunFailed;
     [ObservableProperty] private string lastRunSummary = "";
+
+    public Visibility LastRunSuccessVisibility =>
+        LastRunFailed ? Visibility.Collapsed : Visibility.Visible;
 
     public OverviewViewModel(AutomationCoordinator coordinator, UiLogSink sink, AppHost host)
     {

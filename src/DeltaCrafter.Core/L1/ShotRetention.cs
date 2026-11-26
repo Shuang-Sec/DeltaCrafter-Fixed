@@ -2,6 +2,9 @@ using Serilog;
 
 namespace DeltaCrafter.Core.L1;
 
+/// <summary>诊断截图目录占用统计快照（只读）。</summary>
+internal readonly record struct ShotStorageStats(int FileCount, int GroupCount, long TotalBytes);
+
 /// <summary>
 /// 诊断截图目录(%LocalAppData%\DeltaCrafterFixed\shots)的自动留存清理。
 /// 日志已限制保留 14 天，但失败截图单张 3–8MB 若不限额会持续膨胀到数百 MB。
@@ -15,6 +18,10 @@ public static class ShotRetention
     private static readonly string[] DiagnosticExtensions = [".png", ".txt", ".json"];
 
     public static void TryPrune(string shotsDir, ILogger? log = null,
+        int maxRetainedGroups = DefaultMaxRetainedGroups, int maxAgeDays = DefaultMaxAgeDays) =>
+        _ = TryPruneCount(shotsDir, log, maxRetainedGroups, maxAgeDays);
+
+    internal static int TryPruneCount(string shotsDir, ILogger? log = null,
         int maxRetainedGroups = DefaultMaxRetainedGroups, int maxAgeDays = DefaultMaxAgeDays)
     {
         try
@@ -22,10 +29,39 @@ public static class ShotRetention
             int removed = Prune(shotsDir, DateTimeOffset.UtcNow, maxRetainedGroups, maxAgeDays);
             if (removed > 0)
                 log?.Information("已按留存策略清理 {Count} 个过期诊断截图文件。", removed);
+            return removed;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             log?.Debug(ex, "清理过期诊断截图时出现可忽略的 IO 异常。");
+            return 0;
+        }
+    }
+
+    /// <summary>只读统计诊断目录内的诊断文件数、分组数与总字节数，不修改磁盘。</summary>
+    internal static ShotStorageStats Inspect(string shotsDir)
+    {
+        if (string.IsNullOrWhiteSpace(shotsDir) || !Directory.Exists(shotsDir))
+            return default;
+        try
+        {
+            int files = 0;
+            long bytes = 0;
+            var groups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string path in Directory.EnumerateFiles(shotsDir, "*", SearchOption.TopDirectoryOnly))
+            {
+                var info = new FileInfo(path);
+                if (!DiagnosticExtensions.Contains(info.Extension, StringComparer.OrdinalIgnoreCase))
+                    continue;
+                files++;
+                bytes += info.Length;
+                groups.Add(GroupKey(info.Name));
+            }
+            return new ShotStorageStats(files, groups.Count, bytes);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return default;
         }
     }
 
