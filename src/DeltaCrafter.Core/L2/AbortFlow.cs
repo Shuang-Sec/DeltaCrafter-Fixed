@@ -87,8 +87,7 @@ public sealed class AbortFlow
             if (screen == AnchorKeys.Production)
             {
                 // 仍在生产界面:若按钮不再是「中止」(变为 生产/一键补齐),即已中止成功。
-                string label = ScreenProbe.Normalize(
-                    await _probe.ReadRoiAsync(hwnd, prodSpec.Roi(AnchorKeys.RoiActionButton)));
+                string label = await ReadLabelOnceAsync(hwnd, prodSpec);
                 if (IsConfirmedIdleLabel(label)) return;
             }
         }
@@ -102,12 +101,25 @@ public sealed class AbortFlow
     {
         for (int attempt = 1; attempt <= 2; attempt++)
         {
-            string label = ScreenProbe.Normalize(
-                await _probe.ReadRoiAsync(hwnd, prodSpec.Roi(AnchorKeys.RoiActionButton)));
+            string label = await ReadLabelOnceAsync(hwnd, prodSpec);
             if (label.Length > 0) return label;
             await Task.Delay(1000, ct);
         }
         return "";
+    }
+
+    private async Task<string> ReadLabelOnceAsync(nint hwnd, ScreenSpec prodSpec)
+    {
+        string label = "";
+        var keywords = _probe.Anchors.Keywords;
+        foreach (double scale in new[] { 2.0, 1.0, 1.5 })
+        {
+            var texts = await _probe.ReadRoisAsync(hwnd, [prodSpec.Roi(AnchorKeys.RoiActionButton)], scale);
+            label = ScreenProbe.Normalize(texts[0]);
+            if (LabelHits(label, keywords.ButtonAbort) || IsConfirmedIdleLabel(label))
+                return label;
+        }
+        return label;
     }
 
     private static bool LabelHits(string normalizedLabel, IEnumerable<string> keywords) =>
@@ -115,7 +127,7 @@ public sealed class AbortFlow
             normalizedLabel.Contains(ScreenProbe.Normalize(k), StringComparison.Ordinal));
 
     internal static bool IsConfirmedIdleLabel(string label) =>
-        ScreenProbe.Normalize(label) is "生产" or "一键补齐" or "一健补齐";
+        ScreenProbe.Normalize(label) is "生产" or "一键补齐" or "一健补齐" or "一补齐" or "一卜齐";
 
     private async Task EnsureBackHomeAsync(nint hwnd, CancellationToken ct)
     {

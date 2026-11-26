@@ -11,6 +11,11 @@ public sealed record OcrLine(string Text, double CenterX, double CenterY);
 
 public sealed record OcrReadout(string FullText, IReadOnlyList<OcrLine> Lines);
 
+/// <summary>单个 OCR 词框（原始帧物理像素坐标），用于在合并行内精确定位子标签。</summary>
+internal sealed record OcrWordBox(string Text, double Left, double Top, double Right, double Bottom);
+
+internal sealed record OcrDetailedReadout(OcrReadout Readout, IReadOnlyList<IReadOnlyList<OcrWordBox>> LineWords);
+
 /// <summary>
 /// Windows 内置中文 OCR 封装。约束:
 /// 1) 游戏小字号文本直接识别率差,默认放大 2 倍(最近邻)后再识别;
@@ -36,7 +41,11 @@ public sealed class OcrBrick
     }
 
     /// <summary>识别帧内区域文本。roi 为空表示整帧(诊断用)。</summary>
-    public async Task<OcrReadout> ReadAsync(CapturedFrame frame, NRect? roi = null, double upscale = 2.0)
+    public async Task<OcrReadout> ReadAsync(CapturedFrame frame, NRect? roi = null, double upscale = 2.0) =>
+        (await ReadDetailedAsync(frame, roi, upscale)).Readout;
+
+    /// <summary>识别帧内区域文本并保留逐词边界框，便于在相邻标签合并为同行时精确定位目标词。</summary>
+    internal async Task<OcrDetailedReadout> ReadDetailedAsync(CapturedFrame frame, NRect? roi = null, double upscale = 2.0)
     {
         var (cx, cy, cw, ch) = roi is null
             ? (0, 0, frame.Width, frame.Height)
@@ -55,9 +64,11 @@ public sealed class OcrBrick
 
         double sx = (double)dw / cw, sy = (double)dh / ch;
         var lines = new List<OcrLine>();
+        var lineWords = new List<IReadOnlyList<OcrWordBox>>();
         foreach (var line in result.Lines)
         {
             double minX = double.MaxValue, minY = double.MaxValue, maxX = 0, maxY = 0;
+            var words = new List<OcrWordBox>(line.Words.Count);
             foreach (var word in line.Words)
             {
                 var r = word.BoundingRect;
@@ -65,13 +76,22 @@ public sealed class OcrBrick
                 minY = Math.Min(minY, r.Y);
                 maxX = Math.Max(maxX, r.X + r.Width);
                 maxY = Math.Max(maxY, r.Y + r.Height);
+                words.Add(new OcrWordBox(
+                    word.Text,
+                    cx + r.X / sx,
+                    cy + r.Y / sy,
+                    cx + (r.X + r.Width) / sx,
+                    cy + (r.Y + r.Height) / sy));
             }
             if (minX > maxX) continue; // 无词的空行,丢弃
             lines.Add(new OcrLine(line.Text,
                 cx + (minX + maxX) / 2 / sx,
                 cy + (minY + maxY) / 2 / sy));
+            lineWords.Add(words);
         }
-        return new OcrReadout(string.Join("\n", lines.Select(l => l.Text)), lines);
+        return new OcrDetailedReadout(
+            new OcrReadout(string.Join("\n", lines.Select(l => l.Text)), lines),
+            lineWords);
     }
 
     /// <summary>最近邻重采样(裁剪+缩放一步完成)。识别用途下质量足够,且零额外依赖。</summary>

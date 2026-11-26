@@ -65,7 +65,7 @@ public sealed class CraftStartFlow
             throw new StepFailedException($"{facility}开工前检查",
                 "生产界面显示「中止」,槽位并非空闲——与总览观察不一致,中止本轮待人工确认。");
 
-        if (LabelHits(label, kw.ButtonReplenish))
+        if (IsReplenishLabel(label, kw.ButtonReplenish))
         {
             if (!autoReplenish)
             {
@@ -175,12 +175,18 @@ public sealed class CraftStartFlow
         OcrLine? line = null;
         string previousView = "";
         bool reachedBottom = false;
-        // 滚动直到找到 / 列表内容不再变化(到底或滚动无效) / 安全上限。每页只读一次。
+        // 滚动直到找到 / 列表内容不再变化(到底或滚动无效) / 安全上限。每页单次截帧，2x 未命中时同帧 1.5x 回退防漏行。
         for (int page = 0; page < MaxScrollPages; page++)
         {
             ct.ThrowIfCancellationRequested();
-            var lines = await _probe.ReadAreaLinesAsync(hwnd, listArea);
+            var frame = _probe.Capture(hwnd);
+            var lines = await _probe.ReadAreaLinesFromFrameAsync(frame, listArea, 2.0);
             line = PickLine(lines, searchName, page);
+            if (line is null)
+            {
+                var fallbackLines = await _probe.ReadAreaLinesFromFrameAsync(frame, listArea, 1.5);
+                line = PickLine(fallbackLines, searchName, page);
+            }
             if (line is not null) break;
 
             string currentView = ScreenProbe.Normalize(string.Concat(lines.Select(l => l.Text)));
@@ -284,10 +290,25 @@ public sealed class CraftStartFlow
             {
                 string label = await ReadLabelOnceAsync(hwnd, prodSpec);
                 if (LabelHits(label, _probe.Anchors.Keywords.ButtonProduce)) return label;
+                if (LabelHits(label, _probe.Anchors.Keywords.ButtonAbort))
+                    throw new StepFailedException("确认购买缺料",
+                        $"{facility}购买后按钮处于「中止」态（该槽位可能已在制造中），已中止本轮待确认。");
                 // 等足 Toast 的主要显示窗口后，仍为补齐态才判定普通缺料。
                 if (Environment.TickCount64 - started >= 3_000 &&
-                    LabelHits(label, _probe.Anchors.Keywords.ButtonReplenish))
+                    IsReplenishLabel(label, _probe.Anchors.Keywords.ButtonReplenish))
                     return label;
+            }
+            else if (Environment.TickCount64 - started >= 4_000 &&
+                     await _probe.IsExchangeRequiredReplenishVisibleAsync(hwnd, ct))
+            {
+                // 实测补齐清单含「前去兑换」材料时弹窗不会自动关闭；按一次 ESC 退回生产页并显式标记受阻。
+                _log.Information("{Facility}「{Item}」补齐清单包含需兑换材料，退出弹窗并标记需人工。", facility, displayName);
+                await _runner.RunAsync(hwnd, new Step(
+                    "关闭需兑换补齐清单",
+                    () => _input.PressEscape(),
+                    () => _probe.IsOnAsync(hwnd, AnchorKeys.Production),
+                    TimeSpan.FromSeconds(8), RetryOnce: false), ct);
+                return "";
             }
             await Task.Delay(400, ct);
         }
@@ -307,7 +328,7 @@ public sealed class CraftStartFlow
                 [prodSpec.Roi(AnchorKeys.RoiActionButton)], scale);
             label = ScreenProbe.Normalize(texts[0]);
             if (LabelHits(label, keywords.ButtonProduce) ||
-                LabelHits(label, keywords.ButtonReplenish) ||
+                IsReplenishLabel(label, keywords.ButtonReplenish) ||
                 LabelHits(label, keywords.ButtonAbort))
             {
                 _log.Debug("操作按钮({Scale}x):{Label}", scale, label);
@@ -317,6 +338,16 @@ public sealed class CraftStartFlow
         }
         return label;
     }
+
+    /// <summary>一键补齐按钮判定：除配置关键词外，兼容实测 2x 高频 OCR 误读「一卜齐」「一健补齐」「一补齐」。</summary>
+    internal static bool IsReplenishLabel(string normalizedLabel, IEnumerable<string> keywords) =>
+        normalizedLabel.Length > 0 &&
+        !normalizedLabel.Contains("中止", StringComparison.Ordinal) &&
+        !normalizedLabel.Contains("生产", StringComparison.Ordinal) &&
+        (LabelHits(normalizedLabel, keywords) ||
+         normalizedLabel.Contains("一卜齐", StringComparison.Ordinal) ||
+         normalizedLabel.Contains("一健补齐", StringComparison.Ordinal) ||
+         normalizedLabel.Contains("一补齐", StringComparison.Ordinal));
 
     private static bool LabelHits(string normalizedLabel, IEnumerable<string> keywords) =>
         keywords.Any(k => k.Length > 0 &&

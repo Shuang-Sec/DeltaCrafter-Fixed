@@ -15,6 +15,13 @@
 
 ## [Unreleased]
 
+### 2026-11-26 导航词级定位、操作按钮/详情计时 OCR 与列表双倍率补强
+
+- **大厅顶栏「特勤处」词级定位与过渡重试**：`OcrBrick` 新增内部逐词边界框读取（不改变公开接口），当 Windows OCR 把顶栏相邻标签合并为同一行（如「交易行 特勤处 改枪台」）时，`ScreenProbe.SelectSpecOpsEntryFromWords` 仍可精确提取唯一「特勤处」标签中心（排除「进入特勤处」与歧义重名）；`SpecOpsNavFlow` 在过渡渐入期最多重试 3 帧（不回退固定坐标）。
+- **操作按钮与补齐结果识别加固**：`CraftStartFlow` 与 `AbortFlow` 统一识别 2x 高频误读「一卜齐」「一补齐」「一健补齐」，并为 `AbortFlow` 补齐多倍率读取；`WaitForReplenishOutcomeAsync` 检测到按钮已处于「中止」态时快速失败，检测到补齐清单含「前去兑换」材料且弹窗停留时安全退出并标记单设施「需人工」，不再空等 15 秒拖垮整轮。
+- **配方列表同帧双倍率回退**：`CraftStartFlow` 翻页查找物品时，2x 未命中当前页则复用**同一截帧**追加 1.5x OCR，避免单倍率瞬时误读导致滚过目标配方。
+- **详情计时标签容错**：`CountdownParser` 与 `ScreenProbe.TryParseCountdownReadout` 兼容实测标签误读「剩余时尚」（间→尚），仍严格校验完整合法时分秒。
+
 ### 2026-11-26 槽位同帧界面护栏与仓库空间不足识别补强
 
 - **观察期同帧特勤处护栏**：`ScreenProbe.IsSpecOpsHomeFrameAsync` 与 `ReadSlotRoisGuardedAsync` 在每遍槽位观察前于**同一原始帧**复核「升级制造」探针且无断线弹窗；若画面已切往仓库/邮件/对局，立即丢弃脏帧且累计 2 遍即中止本轮，并在领取/开工点击槽位前二次确认仍在特勤处总览页，彻底消除画面切换后误判 `ReadyToCollect` 并盲点仓库的风险。

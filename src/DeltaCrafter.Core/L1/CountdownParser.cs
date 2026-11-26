@@ -20,7 +20,7 @@ public static partial class CountdownParser
     // 只有标签完整、恰好三个合法数字组且组间仅含已观察到的分隔符时才采信;
     // 不能把任意三个界面数字宽泛拼成倒计时。
     private static readonly Regex LabelledSeparatedDigitsPattern = new(
-        @"剩[ \t]*余[ \t]*时[ \t]*间[ \t]*[:、]?[ \t]*" +
+        @"剩[ \t]*余[ \t]*时[ \t]*[间尚][ \t]*[:、]?[ \t]*" +
         @"(\d{1,3})[ \t:、,.;·．]+([0-5]?\d)[ \t:、,.;·．]+([0-5]?\d)" +
         @"(?![ \t:、,.;·．]*\d)",
         RegexOptions.Compiled);

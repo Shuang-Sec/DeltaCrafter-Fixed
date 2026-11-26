@@ -440,6 +440,53 @@ public sealed partial class ScreenProbe
         return matches.Length == 1 ? matches[0] : null;
     }
 
+    /// <summary>
+    /// 当 Windows OCR 将大厅顶栏多个标签合并为同行（如「交易行 特勤处 改枪台」或「特勤处 0」）时，
+    /// 从逐词边界框中精确提取唯一的「特勤处」子串中心；排除「进入特勤处」及多处歧义匹配，绝不回退固定坐标。
+    /// </summary>
+    internal static OcrLine? SelectSpecOpsEntryFromWords(IReadOnlyList<IReadOnlyList<OcrWordBox>> lineWords)
+    {
+        const string target = "特勤处";
+        var matches = new List<OcrLine>();
+        foreach (var words in lineWords)
+        {
+            if (words.Count == 0) continue;
+            var sb = new System.Text.StringBuilder();
+            var owners = new List<OcrWordBox>();
+            foreach (var word in words)
+            {
+                string norm = Normalize(word.Text);
+                foreach (char c in norm)
+                {
+                    sb.Append(c);
+                    owners.Add(word);
+                }
+            }
+            string full = sb.ToString();
+            if (full.Length < target.Length) continue;
+            int searchFrom = 0;
+            while (true)
+            {
+                int idx = full.IndexOf(target, searchFrom, StringComparison.Ordinal);
+                if (idx < 0) break;
+                searchFrom = idx + target.Length;
+                // 排除底部按钮「进入特勤处」，只接受顶栏标签。
+                if (idx >= 2 && full.AsSpan(idx - 2, 2).SequenceEqual("进入")) continue;
+                double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+                for (int k = idx; k < idx + target.Length; k++)
+                {
+                    var box = owners[k];
+                    minX = Math.Min(minX, box.Left);
+                    minY = Math.Min(minY, box.Top);
+                    maxX = Math.Max(maxX, box.Right);
+                    maxY = Math.Max(maxY, box.Bottom);
+                }
+                matches.Add(new OcrLine(target, (minX + maxX) / 2.0, (minY + maxY) / 2.0));
+            }
+        }
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
     internal async Task<bool> ClickSpecOpsEntryAsync(nint hwnd, CancellationToken ct)
     {
         var frame = Capture(hwnd);
@@ -448,8 +495,9 @@ public sealed partial class ScreenProbe
         foreach (double scale in new[] { 1.5, 2.0, 1.0 })
         {
             ct.ThrowIfCancellationRequested();
-            var read = await _ocr.ReadAsync(frame, nav, scale);
-            var entry = SelectSpecOpsEntry(read.Lines);
+            var detailed = await _ocr.ReadDetailedAsync(frame, nav, scale);
+            var entry = SelectSpecOpsEntry(detailed.Readout.Lines)
+                ?? SelectSpecOpsEntryFromWords(detailed.LineWords);
             if (entry is null) continue;
             ClickFramePoint(hwnd, entry.CenterX, entry.CenterY);
             _log.Information("已按当前大厅帧中的“特勤处”标签点击导航，原图坐标({X:0},{Y:0})。",
@@ -721,8 +769,9 @@ public sealed partial class ScreenProbe
         bool hasLabel = false;
         if (labelledDetail)
         {
+            // 实测详情标签「剩余时间」偶发被读作「剩余时尚」（间→尚）；后方仍须完整合法时分秒。
             var label = System.Text.RegularExpressions.Regex.Match(value,
-                @"^剩\s*余\s*时\s*间\s*[:：、]?\s*(?<value>.*?)\s*$",
+                @"^剩\s*余\s*时\s*[间尚]\s*[:：、．.]?\s*(?<value>.*?)\s*$",
                 System.Text.RegularExpressions.RegexOptions.Singleline);
             if (label.Success) { hasLabel = true; value = label.Groups["value"].Value; }
         }
@@ -861,6 +910,28 @@ public sealed partial class ScreenProbe
     /// <summary>读取区域内全部 OCR 行(配方目录扫描用)。</summary>
     public async Task<IReadOnlyList<OcrLine>> ReadAreaLinesAsync(nint hwnd, NRect area) =>
         (await _ocr.ReadAsync(Capture(hwnd), area)).Lines;
+
+    /// <summary>从同一已捕获帧按指定倍率读取区域 OCR 行，供配方列表同帧双倍率回退复用。</summary>
+    internal async Task<IReadOnlyList<OcrLine>> ReadAreaLinesFromFrameAsync(CapturedFrame frame, NRect area, double upscale = 2.0) =>
+        (await _ocr.ReadAsync(frame, area, upscale)).Lines;
+
+    /// <summary>判定一键补齐清单内是否出现「前去兑换」条目（交易行无法直接购买）。</summary>
+    internal static bool IsExchangeRequiredReplenishText(string text)
+    {
+        string normalized = Normalize(text);
+        return normalized.Contains("补齐清单", StringComparison.Ordinal)
+            && normalized.Contains("前去兑换", StringComparison.Ordinal);
+    }
+
+    internal async Task<bool> IsExchangeRequiredReplenishVisibleAsync(nint hwnd, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var frame = Capture(hwnd);
+        var roi = new NRect { X = 0.16, Y = 0.18, W = 0.68, H = 0.56 };
+        string text = (await _ocr.ReadAsync(frame, roi, 1.5)).FullText;
+        ct.ThrowIfCancellationRequested();
+        return IsExchangeRequiredReplenishText(text);
+    }
 
     /// <summary>保存整帧截图与全文 OCR 转储(失败现场/校准诊断)。返回(截图路径, OCR 文本)。</summary>
     public Task<(string PngPath, string OcrText)> DumpAsync(nint hwnd, string tag) =>
