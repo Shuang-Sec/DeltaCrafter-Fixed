@@ -23,5 +23,6 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="DeltaCrafter.Core.Tests" />
+    <InternalsVisibleTo Include="DeltaCrafter.Fixed" />
   </ItemGroup>
 </Project>

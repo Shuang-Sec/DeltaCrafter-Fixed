@@ -26,6 +26,69 @@ public sealed class ItemCatalog
 
     public IReadOnlyList<CatalogItem> For(FacilityKey key) =>
         Facilities.TryGetValue(FacilityKeys.JsonKey(key), out var list) ? list : [];
+
+    /// <summary>
+    /// 默认目录升级时按修订合并：以新版默认目录为基准（采纳最新修正的显示名与 OCR 匹配键），
+    /// 同时保留本机原有目录里多出来的自定义/扫描条目，避免升级 revision 时静默丢失玩家扫描出的配方。
+    /// </summary>
+    internal static (ItemCatalog Merged, int PreservedCustomCount) MergeWithNewerDefault(
+        ItemCatalog local, ItemCatalog newerDefault)
+    {
+        var merged = new ItemCatalog { Revision = newerDefault.Revision };
+        int preserved = 0;
+
+        foreach (var (facilityKey, defaultItems) in newerDefault.Facilities)
+        {
+            var list = defaultItems.Select(CloneItem).ToList();
+            var known = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var item in list)
+                RegisterCanonicalKeys(known, item);
+
+            if (local.Facilities.TryGetValue(facilityKey, out var localItems))
+            {
+                foreach (var localItem in localItems)
+                {
+                    if (string.IsNullOrWhiteSpace(localItem.Name)) continue;
+                    string nameKey = TextMatch.Canonical(localItem.Name);
+                    string matchKey = TextMatch.Canonical(localItem.MatchKey);
+                    if ((nameKey.Length > 0 && known.Contains(nameKey))
+                        || (matchKey.Length > 0 && known.Contains(matchKey)))
+                        continue;
+
+                    list.Add(CloneItem(localItem));
+                    RegisterCanonicalKeys(known, localItem);
+                    preserved++;
+                }
+            }
+
+            merged.Facilities[facilityKey] = list;
+        }
+
+        // 若本机存在默认表之外的额外设施键，原样保留。
+        foreach (var (facilityKey, localItems) in local.Facilities)
+        {
+            if (merged.Facilities.ContainsKey(facilityKey)) continue;
+            merged.Facilities[facilityKey] = localItems.Select(CloneItem).ToList();
+            preserved += localItems.Count;
+        }
+
+        return (merged, preserved);
+    }
+
+    private static CatalogItem CloneItem(CatalogItem item) => new()
+    {
+        Name = item.Name,
+        Ocr = item.Ocr,
+        Note = item.Note,
+    };
+
+    private static void RegisterCanonicalKeys(HashSet<string> known, CatalogItem item)
+    {
+        string nameKey = TextMatch.Canonical(item.Name);
+        if (nameKey.Length > 0) known.Add(nameKey);
+        string matchKey = TextMatch.Canonical(item.MatchKey);
+        if (matchKey.Length > 0) known.Add(matchKey);
+    }
 }
 
 /// <summary>

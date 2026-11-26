@@ -22,11 +22,22 @@ public sealed class JsonStoreBrick
         Converters = { new JsonStringEnumConverter() },
     };
 
+    // 按目标路径哈希分桶串行化同文件读写：固定 16 槽零内存增长，防止并发写盘在 Windows 上冲突。
+    private static readonly object[] PathStripes =
+        Enumerable.Range(0, 16).Select(_ => new object()).ToArray();
+
+    private static object GateFor(string fullPath) =>
+        PathStripes[(StringComparer.OrdinalIgnoreCase.GetHashCode(fullPath) & int.MaxValue) % PathStripes.Length];
+
     public T Load<T>(string path)
     {
+        string fullPath = Path.GetFullPath(path);
         try
         {
-            var value = JsonSerializer.Deserialize<T>(File.ReadAllText(path), Options);
+            string json;
+            lock (GateFor(fullPath))
+                json = File.ReadAllText(fullPath);
+            var value = JsonSerializer.Deserialize<T>(json, Options);
             return value is not null ? value
                 : throw new InvalidDataException("反序列化结果为 null");
         }
@@ -47,9 +58,23 @@ public sealed class JsonStoreBrick
 
     public void Save<T>(string path, T value)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        string tmp = path + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(value, Options));
-        File.Move(tmp, path, overwrite: true);
+        string fullPath = Path.GetFullPath(path);
+        if (Path.GetDirectoryName(fullPath) is { Length: > 0 } dir)
+            Directory.CreateDirectory(dir);
+        string json = JsonSerializer.Serialize(value, Options);
+        lock (GateFor(fullPath))
+        {
+            string tmp = $"{fullPath}.{Guid.NewGuid():N}.tmp";
+            try
+            {
+                File.WriteAllText(tmp, json);
+                File.Move(tmp, fullPath, overwrite: true);
+            }
+            catch
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* 临时文件清理失败不掩盖原始错误 */ }
+                throw;
+            }
+        }
     }
 }

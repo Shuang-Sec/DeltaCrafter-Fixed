@@ -69,7 +69,7 @@ public sealed class AppHost : ICatalogSink, ICatalogLookup, IAppWindowGuard
         // 默认数据表带修订号:构建里的默认表比本地副本新时,备份并替换本地副本,
         // 免去“每次更新锚点都要手动删本地文件”的操作;用户手改内容保留在 .bak 里。
         UpgradeDataFileIfNewer<AnchorTable>("anchors.json", Paths.AnchorsPath, t => t.Revision);
-        UpgradeDataFileIfNewer<ItemCatalog>("items.json", Paths.ItemsPath, t => t.Revision);
+        UpgradeCatalogIfNewer("items.json", Paths.ItemsPath);
         Settings = Store.LoadOrCreate(Paths.SettingsPath, () => new AppSettings());
         Plan = Store.LoadOrCreate(Paths.PlanPath, CraftPlanConfig.CreateDefault);
         var planMigration = CraftPlanMigration.Upgrade(Plan, Settings);
@@ -131,6 +131,20 @@ public sealed class AppHost : ICatalogSink, ICatalogLookup, IAppWindowGuard
         File.Copy(defaultPath, localPath, overwrite: true);
         Log.Information("{File} 默认表更新(rev {Old} → {New}),已替换本地副本;原文件备份为 {Backup}。",
             fileName, localRev, defaultRev, backup);
+    }
+
+    private void UpgradeCatalogIfNewer(string fileName, string localPath)
+    {
+        string defaultPath = Path.Combine(AppContext.BaseDirectory, "Data", fileName);
+        var defaultCatalog = Store.Load<ItemCatalog>(defaultPath);
+        var localCatalog = Store.Load<ItemCatalog>(localPath);
+        if (defaultCatalog.Revision <= localCatalog.Revision) return;
+        string backup = localPath + ".bak";
+        File.Copy(localPath, backup, overwrite: true);
+        var (merged, preserved) = ItemCatalog.MergeWithNewerDefault(localCatalog, defaultCatalog);
+        Store.Save(localPath, merged);
+        Log.Information("{File} 默认目录更新(rev {Old} → {New}),已合并升级本地副本(保留 {Preserved} 条自定义/扫描条目);原文件备份为 {Backup}。",
+            fileName, localCatalog.Revision, defaultCatalog.Revision, preserved, backup);
     }
 
     private AnchorTable? _anchorsCache;
@@ -287,6 +301,7 @@ public sealed class AppHost : ICatalogSink, ICatalogLookup, IAppWindowGuard
         _isShutdown = true;
         Log.Information("应用退出。");
         _appStop.Cancel();
+        Coordinator.RequestStop();
         _tray?.Dispose();
         SleepGuard.Dispose();
         Notifier.Unregister();

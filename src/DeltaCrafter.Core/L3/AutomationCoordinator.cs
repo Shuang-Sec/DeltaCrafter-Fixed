@@ -74,19 +74,17 @@ public sealed partial class AutomationCoordinator : IDisposable
         _log = log.ForContext<AutomationCoordinator>();
     }
 
-    /// <summary>UI 读取的设施状态快照(浅拷贝,避免与执行线程共享可变对象)。</summary>
-    public IReadOnlyList<FacilityRuntime> FacilitySnapshot() =>
-        _engine.State.Facilities.Select(f => new FacilityRuntime
-        {
-            Key = f.Key, Phase = f.Phase, ItemName = f.ItemName,
-            ReadyAt = f.ReadyAt, ManualReason = f.ManualReason, ObservedAt = f.ObservedAt,
-        }).ToList();
-
-    public (DateTimeOffset? LastRunAt, string? Summary, bool Failed) LastRunInfo()
+    /// <summary>UI 读取的设施状态快照(线程安全拷贝，并对历史 state.json 中的遗留 OCR 噪声做展示规范化)。</summary>
+    public IReadOnlyList<FacilityRuntime> FacilitySnapshot()
     {
-        var s = _engine.State;
-        return (s.LastRunAt, s.LastRunSummary, s.LastRunFailed);
+        var snapshot = _engine.SnapshotFacilities();
+        foreach (var f in snapshot)
+            f.ItemName = DisplayItem(f.Key, f.ItemName);
+        return snapshot;
     }
+
+    public (DateTimeOffset? LastRunAt, string? Summary, bool Failed) LastRunInfo() =>
+        _engine.SnapshotLastRunInfo();
 
     /// <summary>提前量:到点前这么多秒检查游戏是否已开,未开则预启动到大厅,
     /// 把启动器/登录/加载耗时消化在等待期里,到点即可直接收取。</summary>
@@ -623,7 +621,7 @@ public sealed partial class AutomationCoordinator : IDisposable
     /// <summary>槽位 OCR 物品名 → 目录规范显示名;解析不出时清洗空白与已验证 OCR 误读符号
     /// 并保留原型号身份(可能是目录外物品,不猜)。总览卡片与通知里不再出现「4 ． 6 × 3 囗 mm」类原文。</summary>
     private string DisplayItem(FacilityKey key, string ocrName) =>
-        ocrName.Length == 0 ? "" : _catalog.ResolveDisplayName(key, ocrName) ?? ScreenProbe.CleanSlotName(ocrName);
+        ocrName.Length == 0 ? "" : _catalog?.ResolveDisplayName(key, ocrName) ?? ScreenProbe.CleanSlotName(ocrName);
 
     private void Publish(CoordinatorStatus status)
     {

@@ -15,6 +15,8 @@ public sealed class ScheduleEngine
     private readonly string _statePath;
     private readonly IClock _clock;
     private readonly ILogger _log;
+    // 串行化 State 读写与落盘：UI 定时刷新、10 秒调度线程与执行线程会并发访问同一状态对象。
+    private readonly object _gate = new();
 
     public ScheduleState State { get; }
 
@@ -30,13 +32,40 @@ public sealed class ScheduleEngine
     public void RecordObservation(FacilityKey key, FacilityPhase phase, string itemName,
         DateTimeOffset? readyAt, string? manualReason)
     {
-        var rt = State.For(key);
-        rt.Phase = phase;
-        rt.ItemName = itemName;
-        rt.ReadyAt = readyAt;
-        rt.ManualReason = manualReason;
-        rt.ObservedAt = _clock.Now;
-        Save();
+        lock (_gate)
+        {
+            var rt = State.For(key);
+            rt.Phase = phase;
+            rt.ItemName = itemName;
+            rt.ReadyAt = readyAt;
+            rt.ManualReason = manualReason;
+            rt.ObservedAt = _clock.Now;
+            Save();
+        }
+    }
+
+    /// <summary>线程安全地复制四个设施运行态快照，避免 UI 枚举与执行线程写盘竞争。</summary>
+    internal IReadOnlyList<FacilityRuntime> SnapshotFacilities()
+    {
+        lock (_gate)
+        {
+            return State.Facilities.Select(f => new FacilityRuntime
+            {
+                Key = f.Key,
+                Phase = f.Phase,
+                ItemName = f.ItemName,
+                ReadyAt = f.ReadyAt,
+                ManualReason = f.ManualReason,
+                ObservedAt = f.ObservedAt,
+            }).ToList();
+        }
+    }
+
+    /// <summary>线程安全地读取最近一次执行摘要，避免时间与摘要字段撕裂。</summary>
+    internal (DateTimeOffset? LastRunAt, string? Summary, bool Failed) SnapshotLastRunInfo()
+    {
+        lock (_gate)
+            return (State.LastRunAt, State.LastRunSummary, State.LastRunFailed);
     }
 
     /// <summary>
@@ -46,26 +75,29 @@ public sealed class ScheduleEngine
     /// </summary>
     public DateTimeOffset? ComputeNextRunAt(CraftPlanConfig plan, AppSettings settings)
     {
-        var now = _clock.Now;
-        DateTimeOffset? next = null;
-        foreach (var fp in plan.Facilities.Where(f => f.Enabled))
+        lock (_gate)
         {
-            var rt = State.For(fp.Key);
-            DateTimeOffset? candidate = rt.Phase switch
+            var now = _clock.Now;
+            DateTimeOffset? next = null;
+            foreach (var fp in plan.Facilities.Where(f => f.Enabled))
             {
-                FacilityPhase.Crafting when rt.ReadyAt is { } ready =>
-                    ready + ResolveCollectDelay(fp.Key, ready, settings),
-                FacilityPhase.Crafting => now, // 制造中但没有读数,重新观察
-                FacilityPhase.ReadyToCollect or FacilityPhase.Idle or FacilityPhase.Unknown => now,
-                FacilityPhase.NeedsManual => null,
-                _ => null,
-            };
-            if (candidate is { } c && (next is null || c < next)) next = c;
-        }
+                var rt = State.For(fp.Key);
+                DateTimeOffset? candidate = rt.Phase switch
+                {
+                    FacilityPhase.Crafting when rt.ReadyAt is { } ready =>
+                        ready + ResolveCollectDelay(fp.Key, ready, settings),
+                    FacilityPhase.Crafting => now, // 制造中但没有读数,重新观察
+                    FacilityPhase.ReadyToCollect or FacilityPhase.Idle or FacilityPhase.Unknown => now,
+                    FacilityPhase.NeedsManual => null,
+                    _ => null,
+                };
+                if (candidate is { } c && (next is null || c < next)) next = c;
+            }
 
-        if (next is { } n && State.FailureBackoffUntil is { } backoff && backoff > n)
-            next = backoff;
-        return next;
+            if (next is { } n && State.FailureBackoffUntil is { } backoff && backoff > n)
+                next = backoff;
+            return next;
+        }
     }
 
     /// <summary>倒计时结束后至少等待的秒数：默认 60 秒。</summary>
@@ -108,31 +140,44 @@ public sealed class ScheduleEngine
     /// </summary>
     internal DateTimeOffset? EarliestCraftCompletionAt(CraftPlanConfig plan)
     {
-        DateTimeOffset? earliest = null;
-        foreach (var fp in plan.Facilities.Where(f => f.Enabled))
+        lock (_gate)
         {
-            var rt = State.For(fp.Key);
-            if (rt.Phase != FacilityPhase.Crafting || rt.ReadyAt is not { } ready) continue;
-            if (earliest is null || ready < earliest) earliest = ready;
+            DateTimeOffset? earliest = null;
+            foreach (var fp in plan.Facilities.Where(f => f.Enabled))
+            {
+                var rt = State.For(fp.Key);
+                if (rt.Phase != FacilityPhase.Crafting || rt.ReadyAt is not { } ready) continue;
+                if (earliest is null || ready < earliest) earliest = ready;
+            }
+            return earliest;
         }
-        return earliest;
     }
 
     public void MarkRunStarted()
     {
-        State.LastRunAt = _clock.Now;
-        Save();
+        lock (_gate)
+        {
+            State.LastRunAt = _clock.Now;
+            Save();
+        }
     }
 
     public void MarkRunFinished(string summary, bool failed, int failureRetryMinutes)
     {
-        State.LastRunSummary = summary;
-        State.LastRunFailed = failed;
-        State.FailureBackoffUntil = failed ? _clock.Now.AddMinutes(failureRetryMinutes) : null;
-        if (failed)
-            _log.Warning("本轮失败,{Minutes} 分钟后才会再次自动尝试。", failureRetryMinutes);
-        Save();
+        lock (_gate)
+        {
+            State.LastRunSummary = summary;
+            State.LastRunFailed = failed;
+            State.FailureBackoffUntil = failed ? _clock.Now.AddMinutes(failureRetryMinutes) : null;
+            if (failed)
+                _log.Warning("本轮失败,{Minutes} 分钟后才会再次自动尝试。", failureRetryMinutes);
+            Save();
+        }
     }
 
-    public void Save() => _store.Save(_statePath, State);
+    public void Save()
+    {
+        lock (_gate)
+            _store.Save(_statePath, State);
+    }
 }
