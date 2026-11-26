@@ -2,7 +2,7 @@
   // 制造计划页的候选物品目录。name=显示名(规范写法,来源:orzice/aitags 整理表 + 实机截图);
   // ocr=识别原文匹配键,空则用 name 匹配(比较走 TextMatch 规范形:去空白、0/O、1/I/l、×/x 折叠)。
   // 「扫描配方目录」会把玩家实际解锁的条目(OCR 原文)增量合并进来,双轨互补。
-  "revision": 3,
+  "revision": 4,
   "facilities": {
     "tech-center": [
       { "name": "RM277突击步枪" },
@@ -29,6 +29,8 @@
       { "name": "SR-3M紧凑突击步枪" },
       { "name": "幻影垂直握把" },
       { "name": "OLIGHT WARRIOR 3S战术手电", "ocr": "WARRIOR3S战术手电" },
+      { "name": "PEQ-2红色激光镭指" },
+      { "name": "轻语战术消音器" },
       { "name": "共振人体工程握把" },
       { "name": "视点3倍瞄准镜" },
       { "name": "XCOG突击3.5倍瞄准镜" },
@@ -67,6 +69,7 @@
       { "name": "5.7×28mm SS190" },
       { "name": "5.56×45mm M995" },
       { "name": "4.6×30mm AP SX" },
+      { "name": ".300 BLK TAC-TX" },
       { "name": ".300BLK五级弹" },
       { "name": "7.62×39mm SUB-5" },
       { "name": "7.62×39mm AP" },

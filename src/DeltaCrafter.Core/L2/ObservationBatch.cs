@@ -17,7 +17,8 @@ internal enum SlotUnresolvedReason
 }
 
 /// <summary>单遍观察在某一槽位上的一票。Raw 是喂给分类器的原文（计时区 + 整卡）。</summary>
-internal sealed record SlotVote(FacilityObservation Observation, long CapturedAtMs, string Title, string Raw);
+internal sealed record SlotVote(FacilityObservation Observation, long CapturedAtMs, string Title, string Raw,
+    double Upscale = 2.0);
 
 /// <summary>未判定工位：原因、已得到的有效票数、最后一票原文。</summary>
 internal sealed record SlotUnresolved(SlotUnresolvedReason Reason, int Votes, string LastRaw);

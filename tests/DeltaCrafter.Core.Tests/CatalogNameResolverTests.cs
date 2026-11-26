@@ -45,11 +45,40 @@ public class CatalogNameResolverTests
     [InlineData("5.45×39mm BS", "5．45x39mmBS")]
     [InlineData("7.62×39mm AP", "7毛2x39mmAP")]
     [InlineData("体能激活针", "体能氵敫活针")]
+    [InlineData("体能激活针", "体 能 氵 敫 活 针")]
     [InlineData("视点3倍瞄准镜", "视点3倍喵准镜")]
+    [InlineData("视点3倍瞄准镜", "视 点 3 倍 描 准 镜")]
+    [InlineData("视点3倍瞄准镜", "视 点 3 倍 瞄 准 锯")]
+    [InlineData("XCOG突击3.5倍瞄准镜", "× COG 突 击 3 ． 5 倍 喵 准 镜")]
+    [InlineData("XCOG突击3.5倍瞄准镜", "× COG 突 击 3 、 5 倍 瞄 准 镜")]
+    [InlineData("4.6×30mm AP SX", "4 ． 6 × 3 囗 mm A P SX")]
+    [InlineData("H09防暴头盔", "H 囗 9 防 暴 头 盔")]
+    [InlineData(".300 BLK TAC-TX", "． 3 囗 0 BLK TAC-TX")]
+    [InlineData("PEQ-2红色激光镭指", "PEQ 一 2 红 色 激 光 镭 指")]
     public void Verified_ocr_confusions_keep_working(string catalogName, string observed)
     {
         Assert.Equal(catalogName,
             CatalogNameResolver.Resolve([new() { Name = catalogName }], observed));
+    }
+
+    [Fact]
+    public void Default_catalog_resolves_recent_real_world_ocr_misreads()
+    {
+        var catalog = new JsonStoreBrick().Load<ItemCatalog>(
+            Path.Combine(AppContext.BaseDirectory, "Data", "items.json"));
+
+        Assert.Equal("4.6×30mm AP SX",
+            CatalogNameResolver.Resolve(catalog.For(FacilityKey.Workbench), "4 ． 6 × 3 囗 mm A P SX"));
+        Assert.Equal(".300 BLK TAC-TX",
+            CatalogNameResolver.Resolve(catalog.For(FacilityKey.Workbench), "． 3 囗 0 BLK TAC-TX"));
+        Assert.Equal("XCOG突击3.5倍瞄准镜",
+            CatalogNameResolver.Resolve(catalog.For(FacilityKey.TechCenter), "× COG 突 击 3 ． 5 倍 喵 准 镜"));
+        Assert.Equal("视点3倍瞄准镜",
+            CatalogNameResolver.Resolve(catalog.For(FacilityKey.TechCenter), "视 点 3 倍 描 准 镜"));
+        Assert.Equal("PEQ-2红色激光镭指",
+            CatalogNameResolver.Resolve(catalog.For(FacilityKey.TechCenter), "PEQ 一 2 红 色 激 光 镭 指"));
+        Assert.Equal("轻语战术消音器",
+            CatalogNameResolver.Resolve(catalog.For(FacilityKey.TechCenter), "轻 语 战 术 消 音 器"));
     }
 
     [Fact]

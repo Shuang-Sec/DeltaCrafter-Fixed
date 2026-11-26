@@ -98,7 +98,7 @@ public sealed class CollectFlow
                 if (title.Length > 0) _log.Debug("{Facility} 独立标题多候选共识:{Title}",
                     FacilityKeys.DisplayName(key), title);
 
-                votes[key].Add(new SlotVote(obs, capMs, title, raw));
+                votes[key].Add(new SlotVote(obs, capMs, title, raw, upscale));
                 var resolution = ResolveSlot(votes[key]);
                 if (resolution.Agreed is { } settled)
                 {
@@ -147,8 +147,7 @@ public sealed class CollectFlow
     /// </summary>
     internal static SlotResolution ResolveSlot(IReadOnlyList<SlotVote> votes)
     {
-        FacilityObservation? claim = null;
-        long claimCapturedAt = 0;
+        SlotVote? claimVote = null;
         int parsed = 0;
         string lastRaw = "";
         foreach (var vote in votes)
@@ -157,20 +156,19 @@ public sealed class CollectFlow
             var observation = vote.Observation;
             if (observation.Phase == FacilityPhase.Unknown) continue;
             parsed++;
-            if (claim is null)
+            if (claimVote is null)
             {
-                claim = observation; // 首票
-                claimCapturedAt = vote.CapturedAtMs;
+                claimVote = vote; // 首票
                 continue;
             }
+            var claim = claimVote.Observation;
             if (claim.Phase == observation.Phase &&
-                CountdownConsistent(claim, claimCapturedAt, observation, vote.CapturedAtMs))
-                return new SlotResolution(Merge(claim, observation), vote.CapturedAtMs,
+                CountdownConsistent(claim, claimVote.CapturedAtMs, observation, vote.CapturedAtMs))
+                return new SlotResolution(Merge(claimVote, vote), vote.CapturedAtMs,
                     SlotUnresolvedReason.None, parsed, lastRaw);
             if (claim.Phase == FacilityPhase.Crafting && observation.Phase == FacilityPhase.ReadyToCollect)
                 continue; // 负向证据不得推翻正向证据——丢弃此票,保留制造中票
-            claim = observation; // 与前票冲突:以最新一票为基准继续观察
-            claimCapturedAt = vote.CapturedAtMs;
+            claimVote = vote; // 与前票冲突:以最新一票为基准继续观察
         }
 
         bool anyText = votes.Any(v => ScreenProbe.Normalize(v.Raw).Length > 0);
@@ -181,8 +179,8 @@ public sealed class CollectFlow
         else reason = SlotUnresolvedReason.TextWithoutPhase;
         // 票数按“与最后基准同相位”统计：被丢弃的 ReadyToCollect 负向票不应把
         // “仅一票”说成“多票冲突”，失败信息才能对准真实证据。
-        int samePhase = claim is null ? 0
-            : votes.Count(v => v.Observation.Phase == claim.Phase);
+        int samePhase = claimVote is null ? 0
+            : votes.Count(v => v.Observation.Phase == claimVote.Observation.Phase);
         return new SlotResolution(null, 0, reason, samePhase, lastRaw);
     }
 
@@ -198,9 +196,33 @@ public sealed class CollectFlow
         return ScreenProbe.CountdownReadingsConsistent(r1, prevMs, r2, curMs);
     }
 
-    /// <summary>两票一致后的合并:取最新一票(倒计时更准),物品名取非空者。</summary>
-    private static FacilityObservation Merge(FacilityObservation prev, FacilityObservation cur) =>
-        cur with { ItemName = cur.ItemName.Length > 0 ? cur.ItemName : prev.ItemName };
+    /// <summary>两票一致后的合并:取最新一票(倒计时更准),物品名优先保留独立标题共识、
+    /// 无已知 OCR 误读痕迹及更高倍率(2x 优于 1x)的一票。</summary>
+    private static FacilityObservation Merge(SlotVote prev, SlotVote cur) =>
+        cur.Observation with { ItemName = SelectBetterItemName(prev, cur) };
+
+    private static string SelectBetterItemName(SlotVote prev, SlotVote cur)
+    {
+        string prevName = prev.Observation.ItemName;
+        string curName = cur.Observation.ItemName;
+        if (prevName.Length == 0) return curName;
+        if (curName.Length == 0) return prevName;
+
+        bool prevConsensus = prev.Title.Length > 0;
+        bool curConsensus = cur.Title.Length > 0;
+        if (prevConsensus != curConsensus)
+            return prevConsensus ? prevName : curName;
+
+        int prevPenalty = ScreenProbe.RawOcrArtifactPenalty(prevName);
+        int curPenalty = ScreenProbe.RawOcrArtifactPenalty(curName);
+        if (prevPenalty != curPenalty)
+            return prevPenalty < curPenalty ? prevName : curName;
+
+        if (Math.Abs(prev.Upscale - cur.Upscale) > 0.01)
+            return prev.Upscale > cur.Upscale ? prevName : curName;
+
+        return prevName;
+    }
 
     private FacilityObservation Classify(string raw)
     {
@@ -260,9 +282,12 @@ public sealed class CollectFlow
         line.Count(char.IsDigit) >= 2 &&
         (line.Any(character => character is ':' or '：') ||
          // 损坏计时依然是计时证据；这里只排除名称/可领取判断，不推算任何数字。
-         // 兼容真实残文「乁 11 ． 57 ． 25」「08．57 37」「（9 011919」。
+         // 兼容真实残文「乁 11 ． 57 ． 25」「08．57 37」「03 5 34」「（9 011919」，
+         // 同时避免把空格拆分后的物品编号（如「． 3 0 0 BLK TAC-TX」）误判为损坏倒计时。
          System.Text.RegularExpressions.Regex.IsMatch(line,
-             @"\d{1,3}[ \t:：、,.;·．，]+\d{1,3}[ \t:：、,.;·．，]+\d{1,3}") ||
+             @"\d{1,3}(?:[ \t]*[:：、,.;·．，][ \t]*\d{1,3}[ \t:：、,.;·．，]+\d{1,3}|[ \t]+\d{1,3}[ \t]*[:：、,.;·．，][ \t]*\d{1,3})") ||
+         System.Text.RegularExpressions.Regex.IsMatch(line,
+             @"^\s*[^\p{L}\p{Nd}]*\d{1,3}[ \t]+\d{1,3}[ \t]+\d{1,3}[^\p{L}\p{Nd}]*$") ||
          System.Text.RegularExpressions.Regex.IsMatch(line,
              @"^\s*[^\p{L}\p{Nd}]*\d[\d\s:：、,.;·．，℃]*$") ||
          System.Text.RegularExpressions.Regex.IsMatch(line, @"^\s*\d{4,}\s*$") ||

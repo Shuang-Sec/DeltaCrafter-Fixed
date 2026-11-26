@@ -30,6 +30,12 @@ public sealed class DeepObservedIdentityTests : IDisposable
         RecordAndAssert(FacilityPhase.Crafting, "视点3倍瞄准镜", "视点3倍瞄准镜");
     }
 
+    [Fact]
+    public void Uncataloged_raw_ocr_name_is_cleaned_for_display_without_guessing_model_identity()
+    {
+        RecordAndAssert(FacilityPhase.Crafting, "5 ． 45 × 39 mm BT", "5.45×39mm BT");
+    }
+
     private void RecordAndAssert(FacilityPhase phase, string observedName, string expectedName)
     {
         Directory.CreateDirectory(_dir);

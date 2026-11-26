@@ -114,6 +114,45 @@ public class SlotConsensusTests
     }
 
     [Fact]
+    public void Merge_keeps_clean_two_x_or_consensus_item_name_over_garbled_one_x_second_pass()
+    {
+        var pass1 = new SlotVote(
+            new FacilityObservation(FacilityPhase.Crafting, new TimeSpan(3, 6, 19), "4 ． 6 × 30 mm A P SX", "03:06:19\n4 ． 6 × 30 mm A P SX"),
+            0, "", "03:06:19\n4 ． 6 × 30 mm A P SX", 2.0);
+        var pass2 = new SlotVote(
+            new FacilityObservation(FacilityPhase.Crafting, new TimeSpan(3, 6, 18), "4 ． 6 × 3 囗 mm A P SX", "03:06:18\n4 ． 6 × 3 囗 mm A P SX"),
+            800, "", "03:06:18\n4 ． 6 × 3 囗 mm A P SX", 1.0);
+        var settled = CollectFlow.ResolveSlot([pass1, pass2]);
+        Assert.NotNull(settled.Agreed);
+        Assert.Equal(new TimeSpan(3, 6, 18), settled.Agreed!.Remaining);
+        Assert.Equal("4 ． 6 × 30 mm A P SX", settled.Agreed.ItemName);
+
+        var scope1 = new SlotVote(
+            new FacilityObservation(FacilityPhase.ReadyToCollect, null, "视 点 3 倍 瞄 准 镜", "视 点 3 倍 瞄 准 镜"),
+            0, "", "视 点 3 倍 瞄 准 镜", 2.0);
+        var scope2 = new SlotVote(
+            new FacilityObservation(FacilityPhase.ReadyToCollect, null, "视 点 3 倍 瞄 准 锯", "视 点 3 倍 瞄 准 锯"),
+            800, "", "视 点 3 倍 瞄 准 锯", 1.0);
+        Assert.Equal("视 点 3 倍 瞄 准 镜", CollectFlow.ResolveSlot([scope1, scope2]).Agreed!.ItemName);
+
+        var ammo1 = new SlotVote(
+            new FacilityObservation(FacilityPhase.ReadyToCollect, null, "． 3 0 0 BLK TAC-TX", "． 3 0 0 BLK TAC-TX"),
+            0, "", "． 3 0 0 BLK TAC-TX", 2.0);
+        var ammo2 = new SlotVote(
+            new FacilityObservation(FacilityPhase.ReadyToCollect, null, "． 3 囗 日 BLK TAC-TX", "． 3 囗 日 BLK TAC-TX"),
+            800, "", "． 3 囗 日 BLK TAC-TX", 1.0);
+        Assert.Equal("． 3 0 0 BLK TAC-TX", CollectFlow.ResolveSlot([ammo1, ammo2]).Agreed!.ItemName);
+
+        var med1 = new SlotVote(
+            new FacilityObservation(FacilityPhase.Crafting, new TimeSpan(1, 0, 10), "战地医疗箱", "01:00:10\n战地医疗箱"),
+            0, "战地医疗箱", "01:00:10\n战地医疗箱", 2.0);
+        var med2 = new SlotVote(
+            new FacilityObservation(FacilityPhase.Crafting, new TimeSpan(1, 0, 9), "战 地 医 疗 箱 AID", "01:00:09\n战 地 医 疗 箱 AID"),
+            800, "", "01:00:09\n战 地 医 疗 箱 AID", 1.0);
+        Assert.Equal("战地医疗箱", CollectFlow.ResolveSlot([med1, med2]).Agreed!.ItemName);
+    }
+
+    [Fact]
     public void Batch_message_distinguishes_time_like_failure_from_empty_slots()
     {
         var batch = new ObservationBatch(

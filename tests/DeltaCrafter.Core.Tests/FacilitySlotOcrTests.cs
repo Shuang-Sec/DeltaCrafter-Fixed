@@ -29,9 +29,19 @@ public class FacilitySlotOcrTests
     [InlineData("013652")]
     [InlineData("04℃x℃6")]
     [InlineData("℃04")]
+    [InlineData("03 5 34")]
     public void Damaged_countdown_is_not_mistaken_for_a_collectible_item(string text)
     {
         Assert.Equal(FacilityPhase.Unknown, Classify(text).Phase);
+    }
+
+    [Fact]
+    public void Spaced_digits_inside_completed_ammunition_title_are_not_mistaken_for_a_damaged_countdown()
+    {
+        var observation = Classify("． 3 0 0 BLK TAC-TX");
+        Assert.Equal(FacilityPhase.ReadyToCollect, observation.Phase);
+        Assert.Equal("． 3 0 0 BLK TAC-TX", observation.ItemName);
+        Assert.Null(observation.Remaining);
     }
 
     [Theory]

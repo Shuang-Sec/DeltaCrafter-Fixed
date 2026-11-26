@@ -20,7 +20,7 @@ public static class TextMatch
         foreach (char c in text)
         {
             if (char.IsWhiteSpace(c)) continue;
-            if (c is '.' or '．' or '`' or '·' or '\'' or '’' or '‘' or '´' or ',' or '，')
+            if (c is '.' or '．' or '`' or '·' or '\'' or '’' or '‘' or '´' or ',' or '，' or '、')
             {
                 if (preserveDecimalPoints) sb.Append('.'); // 名称中的 3.5 与 35 是不同规格。
                 continue;
@@ -32,7 +32,7 @@ public static class TextMatch
             }
             char folded = c switch
             {
-                'O' or 'o' or 'О' or 'о' => '0', // 含西里尔 O
+                'O' or 'o' or 'О' or 'о' or '囗' or '〇' or '○' => '0', // 含西里尔 O 及中文 OCR 对 0 的框形/圈形误读(30→3囗、300→3囗0)
                 'I' or 'l' => '1',
                 '×' => 'X', // 弹药口径写法:规范名用乘号,游戏/OCR 常用字母 x
                 '毛' => '6', // 实测「.6」被 OCR 连体误读成「毛」(7.62 → 7毛2);目录无含「毛」物品
@@ -72,9 +72,17 @@ public static class TextMatch
         // 「0凵GHT」属于已验证的 OLIGHT 品牌误读，首位0不是品质图标。
         if (!Canonical(text).StartsWith("0凵GHT", StringComparison.Ordinal))
             text = System.Text.RegularExpressions.Regex.Replace(text,
-                @"^(?:0|O|»|》|卜|>|僉)\s*(?=[\p{IsCJKUnifiedIdeographs}])", "");
-        string canonical = Canonical(text.Replace("氵敫", "激", StringComparison.Ordinal)
-            .Replace("喵准镜", "瞄准镜", StringComparison.Ordinal), preserveDecimalPoints: true);
+                @"^(?:0|O|»|》|卜|>|僉|※)\s*(?=[\p{IsCJKUnifiedIdeographs}])", "");
+        // 先经 Canonical 去空白后再做中文同形误读替换：Windows OCR 会在中文字间插空格
+        // （实测「× COG 突 击 3 ． 5 倍 喵 准 镜」「视 点 3 倍 描 准 镜」），去空白前替换会漏匹配。
+        string canonical = Canonical(text, preserveDecimalPoints: true)
+            .Replace("氵敫", "激", StringComparison.Ordinal)
+            .Replace("喵准镜", "瞄准镜", StringComparison.Ordinal)
+            .Replace("描准镜", "瞄准镜", StringComparison.Ordinal)
+            .Replace("瞄准锯", "瞄准镜", StringComparison.Ordinal);
+        // 实测 ASCII 连字符在字母/数字间会被读成中文「一」（如「PEQ一2」「SMG一45」）。
+        canonical = System.Text.RegularExpressions.Regex.Replace(
+            canonical, @"(?<=[A-Z0-9])一(?=[A-Z0-9])", "-");
 
         // 默认目录的 OCR 键特意省略此品牌；只接受已验证的这一个完整型号别名。
         string warrior = Canonical("WARRIOR3S战术手电");

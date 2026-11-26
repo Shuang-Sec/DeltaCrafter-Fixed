@@ -622,10 +622,10 @@ public sealed partial class AutomationCoordinator : IDisposable
         return report;
     }
 
-    /// <summary>槽位 OCR 物品名 → 目录规范显示名;解析不出保留原文(可能是目录外物品,不猜)。
-    /// 总览卡片与通知里呈现的是数据库写法,而非「7毛2×39mmAP」这类识别原文。</summary>
+    /// <summary>槽位 OCR 物品名 → 目录规范显示名;解析不出时清洗空白与已验证 OCR 误读符号
+    /// 并保留原型号身份(可能是目录外物品,不猜)。总览卡片与通知里不再出现「4 ． 6 × 3 囗 mm」类原文。</summary>
     private string DisplayItem(FacilityKey key, string ocrName) =>
-        ocrName.Length == 0 ? "" : _catalog.ResolveDisplayName(key, ocrName) ?? ocrName;
+        ocrName.Length == 0 ? "" : _catalog.ResolveDisplayName(key, ocrName) ?? ScreenProbe.CleanSlotName(ocrName);
 
     private void Publish(CoordinatorStatus status)
     {
