@@ -71,6 +71,7 @@ public sealed class CollectFlow
 
         var votes = FacilityKeys.All.ToDictionary(k => k, _ => new List<SlotVote>());
         var agreed = new Dictionary<FacilityKey, (FacilityObservation Obs, long CapMs)>();
+        int offPagePasses = 0;
 
         for (int pass = 1; pass <= MaxObservationPasses; pass++)
         {
@@ -80,7 +81,22 @@ public sealed class CollectFlow
             _windowGuard.MinimizeForRun();
             double upscale = pass % 2 == 1 ? 2.0 : 1.0;
             long capMs = Environment.TickCount64; // 截帧时刻:剩余时间读数对应的基准点
-            string[] texts = await _probe.ReadSlotRoisAsync(hwnd, rois, timerRois, upscale);
+            var readout = await _probe.ReadSlotRoisGuardedAsync(hwnd, rois, timerRois, upscale, ct);
+            if (!readout.OnSpecOpsHome)
+            {
+                offPagePasses++;
+                _log.Warning("第 {Pass} 遍槽位观察未在同帧检测到特勤处总览探针，已丢弃该帧读数，不参与槽位投票。", pass);
+                if (ShouldAbortOffSpecOpsHome(offPagePasses))
+                {
+                    var (offPng, offDump) = await _probe.DumpFrameAsync(readout.Frame, "fail-离开特勤处总览");
+                    throw new StepFailedException("观察设施状态",
+                        $"观察期间游戏画面已离开特勤处总览页（可能已切换至仓库/对局或被弹窗遮挡），已停止观察与点击。诊断截图:{offPng}",
+                        offPng, offDump);
+                }
+                if (pass < MaxObservationPasses) await Task.Delay(ObservationPassDelayMs, ct);
+                continue;
+            }
+            string[] texts = readout.Texts;
             for (int i = 0; i < FacilityKeys.All.Length; i++)
             {
                 var key = FacilityKeys.All[i];
@@ -313,10 +329,31 @@ public sealed class CollectFlow
             .FirstOrDefault() ?? "";
     }
 
+    /// <summary>单帧短暂动画/提示遮挡丢弃重试；累计两帧确认离开特勤处总览即立即中止，防止盲点仓库或对局。</summary>
+    internal static bool ShouldAbortOffSpecOpsHome(int offPagePasses) => offPagePasses >= 2;
+
+    /// <summary>在点击总览槽位前二次核对当前仍处于特勤处总览页，避免页面被切走后误点其他界面。</summary>
+    internal static async Task EnsureOnSpecOpsHomeBeforeSlotClickAsync(Func<Task<bool>> isSpecOpsHome,
+        Func<Task<StepFailedException>> failure, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!await isSpecOpsHome())
+            throw await failure();
+        ct.ThrowIfCancellationRequested();
+    }
+
     /// <summary>领取产物并回到特勤处总览。</summary>
     public async Task CollectAsync(nint hwnd, FacilityKey key, CancellationToken ct)
     {
         string name = FacilityKeys.DisplayName(key);
+        await EnsureOnSpecOpsHomeBeforeSlotClickAsync(
+            () => _probe.IsOnAsync(hwnd, AnchorKeys.SpecOpsHome),
+            async () =>
+            {
+                var (png, dumpText) = await _probe.DumpAsync(hwnd, "fail-领取前不在特勤处");
+                return new StepFailedException($"领取{name}产物",
+                    $"当前画面已不在特勤处总览页，未点击槽位。诊断截图:{png}", png, dumpText);
+            }, ct);
         _probe.ClickPoint(hwnd, AnchorKeys.SpecOpsHome, AnchorKeys.FacilitySlot(key));
 
         // 分支一:直达「获得奖励」;分支二:进入生产页,需再点「领取」按钮。

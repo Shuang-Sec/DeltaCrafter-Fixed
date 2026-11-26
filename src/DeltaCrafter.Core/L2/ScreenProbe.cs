@@ -7,6 +7,9 @@ namespace DeltaCrafter.Core.L2;
 /// <summary>单帧计时读取结果；失败保留原文，不猜测时长。</summary>
 internal sealed record CountdownOcrReadout(string Text, TimeSpan? Remaining);
 
+/// <summary>单帧特勤处槽位读取结果；仅当同一帧确认仍在特勤处总览页时才提供槽位文本。</summary>
+internal sealed record SlotFrameReadout(bool OnSpecOpsHome, string[] Texts, CapturedFrame Frame);
+
 /// <summary>详情标题读取结果；匹配始终使用完整配方身份。</summary>
 internal sealed record RecipeTitleOcrReadout(string Text, bool Matched);
 
@@ -481,7 +484,9 @@ public sealed partial class ScreenProbe
             return await ReadCollectionMenuFromFrameAsync(frame, ct);
         var spec = Screen(screenName);
         string text = (await _ocr.ReadAsync(frame, spec.Probe.Roi, spec.Probe.Upscale)).FullText;
-        bool on = Normalize(text).Contains(Normalize(spec.Probe.MustContain), StringComparison.Ordinal);
+        bool on = screenName == AnchorKeys.WarehouseFull
+            ? IsWarehouseFullText(text, spec.Probe.MustContain)
+            : Normalize(text).Contains(Normalize(spec.Probe.MustContain), StringComparison.Ordinal);
         if (!on && screenName == AnchorKeys.ModeSelect)
             on = (await ReadModeSelectionFromFrameAsync(frame, ct)).Detected;
         if (!on && screenName == AnchorKeys.PromoAnnounce)
@@ -493,6 +498,48 @@ public sealed partial class ScreenProbe
         if (on) RecordKnownScene(screenName);
         _log.Debug("界面判定 {Screen}:{Result}(读到:{Text})", screenName, on, Compact(text));
         return on;
+    }
+
+    /// <summary>
+    /// 顶部 Toast 区域内的仓库空间不足判定：除配置的「仓库空间不足」外，
+    /// 实机还出现「仓库找不到可以容纳XXX的位置」（仓库格子碎片化装不下大体积材料）与「仓库已满」。
+    /// 仅在 warehouse-full 顶部 Toast ROI 调用，不匹配普通仓库页标题。
+    /// </summary>
+    internal static bool IsWarehouseFullText(string text, string configuredKeyword = "仓库空间不足")
+    {
+        string normalized = Normalize(text);
+        if (normalized.Length == 0) return false;
+        string required = Normalize(configuredKeyword);
+        if (required.Length > 0 && normalized.Contains(required, StringComparison.Ordinal))
+            return true;
+        return normalized.Contains("仓库找不到可以容纳", StringComparison.Ordinal)
+            || (normalized.Contains("找不到可以容纳", StringComparison.Ordinal)
+                && normalized.Contains("位置", StringComparison.Ordinal))
+            || normalized.Contains("仓库已满", StringComparison.Ordinal)
+            || normalized.Contains("仓库空间不足", StringComparison.Ordinal);
+    }
+
+    internal static bool IsSpecOpsHomeProbeText(string text, string mustContain)
+    {
+        string expected = Normalize(mustContain);
+        return expected.Length > 0 && Normalize(text).Contains(expected, StringComparison.Ordinal);
+    }
+
+    /// <summary>确认同一原始帧仍处于特勤处总览页（含「升级制造」探针且无断线遮挡），
+    /// 防止观察期间画面切换至仓库/邮件/弹窗后把无关文字误判为可领取槽位并触发误点。</summary>
+    internal async Task<bool> IsSpecOpsHomeFrameAsync(CapturedFrame frame, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if ((await ReadNetworkReconnectFromFrameAsync(frame, ct)).Detected) return false;
+        var spec = Screen(AnchorKeys.SpecOpsHome);
+        foreach (double scale in new[] { spec.Probe.Upscale, 1.5 }.Distinct())
+        {
+            ct.ThrowIfCancellationRequested();
+            string text = (await _ocr.ReadAsync(frame, spec.Probe.Roi, scale)).FullText;
+            if (IsSpecOpsHomeProbeText(text, spec.Probe.MustContain))
+                return true;
+        }
+        return false;
     }
 
     public async Task<string> ReadRoiAsync(nint hwnd, NRect roi) =>
@@ -512,6 +559,17 @@ public sealed partial class ScreenProbe
     internal async Task<string[]> ReadSlotRoisAsync(nint hwnd, IReadOnlyList<NRect> slots,
         IReadOnlyList<NRect> timers, double upscale)
         => await ReadSlotRoisFromFrameAsync(Capture(hwnd), slots, timers, upscale);
+
+    /// <summary>同帧校验特勤处总览探针后再读四槽位；已离开总览页时拒绝输出脏槽位文本。</summary>
+    internal async Task<SlotFrameReadout> ReadSlotRoisGuardedAsync(nint hwnd, IReadOnlyList<NRect> slots,
+        IReadOnlyList<NRect> timers, double upscale, CancellationToken ct)
+    {
+        var frame = Capture(hwnd);
+        if (!await IsSpecOpsHomeFrameAsync(frame, ct))
+            return new SlotFrameReadout(false, [], frame);
+        var texts = await ReadSlotRoisFromFrameAsync(frame, slots, timers, upscale);
+        return new SlotFrameReadout(true, texts, frame);
+    }
 
     /// <summary>生产读取和原图回放共用同一入口，避免只验证独立OCR却漏过槽位消费者。</summary>
     internal async Task<string[]> ReadSlotRoisFromFrameAsync(CapturedFrame frame,

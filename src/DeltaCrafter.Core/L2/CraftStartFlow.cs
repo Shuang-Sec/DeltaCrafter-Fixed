@@ -43,6 +43,15 @@ public sealed class CraftStartFlow
         var prodSpec = _probe.Screen(AnchorKeys.Production);
         var kw = _probe.Anchors.Keywords;
 
+        await CollectFlow.EnsureOnSpecOpsHomeBeforeSlotClickAsync(
+            () => _probe.IsOnAsync(hwnd, AnchorKeys.SpecOpsHome),
+            async () =>
+            {
+                var (png, dumpText) = await _probe.DumpAsync(hwnd, "fail-开工前不在特勤处");
+                return new StepFailedException($"打开{facility}生产界面",
+                    $"当前画面已不在特勤处总览页，未点击槽位。诊断截图:{png}", png, dumpText);
+            }, ct);
+
         await _runner.RunAsync(hwnd, new Step(
             $"打开{facility}生产界面",
             () => _probe.ClickPoint(hwnd, AnchorKeys.SpecOpsHome, AnchorKeys.FacilitySlot(key)),
