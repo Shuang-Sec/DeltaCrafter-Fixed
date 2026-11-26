@@ -752,11 +752,13 @@ public sealed partial class ScreenProbe
         variants.Add((150, 2));
         variants.AddRange(TimerFallbacks.Select(v => ((int?)v.Threshold, v.Scale)));
         string primary = "";
+        var fallbackTexts = new List<string>(TimerFallbacks.Length);
         for (int index = 0; index < variants.Count; index++)
         {
             var (threshold, scale) = variants[index];
             string raw = await readCandidate(threshold, scale);
             if (index == 0) primary = raw;
+            else if (!labelledDetail) fallbackTexts.Add(raw);
             if (!TryParseCountdownReadout(raw, labelledDetail, out var remaining)) continue;
             // 总览备用仍只提升两位小时的完整数字，不把时钟图标噪声提升为长订单。
             if (!labelledDetail && index > 0 && !System.Text.RegularExpressions.Regex.IsMatch(
@@ -766,7 +768,8 @@ public sealed partial class ScreenProbe
         // 实测总览防具台 03:38:12 在阈值150/2x 丢失分钟数字，阈值80/3x读空，
         // 阈值130/2x将8误读为&；未处理的同帧2x则读出完整时分秒。
         // 保留已有主候选归一化的优先级，只有主候选也无法还原时才尝试原图，
-        // 且原图备用只接受完整两位时分秒，不猜测丢失数字或折叠形近字。
+        // 且原图备用只接受完整两位时分秒或零形近字折叠的六位纯数字单分隔紧凑形（实测 0128：30、0158．26、00：2117），
+        // 不猜测丢失数字、不接受纯六位无分隔数字、也不折叠形近字。
         if (!labelledDetail && !SlotTimerCanonicalizer.TryCanonicalize(primary, out _))
         {
             string raw = await readCandidate(null, 2);
@@ -774,8 +777,36 @@ public sealed partial class ScreenProbe
                     @"^[0-9]{2}[:：．，][0-5][0-9][:：．，][0-5][0-9]$") &&
                 TryParseCountdownReadout(raw, false, out var remaining))
                 return new CountdownOcrReadout(raw, remaining);
+            // 优先检查原图 2x 的严格六位纯数字单分隔读数，再回退检查已读取的阈值 130/80 备用读数
+            // （零额外 OCR 调用；原图优先可避免阈值 130 把 8 误二值化为 &）。
+            if (TryParseExactCompactedOverviewTimer(raw, out var rawCompacted))
+                return new CountdownOcrReadout(raw, rawCompacted);
+            for (int i = fallbackTexts.Count - 1; i >= 0; i--)
+            {
+                if (TryParseExactCompactedOverviewTimer(fallbackTexts[i], out var fallbackCompacted))
+                    return new CountdownOcrReadout(fallbackTexts[i], fallbackCompacted);
+            }
         }
         return new CountdownOcrReadout(primary, null);
+    }
+
+    /// <summary>
+    /// 严格六位纯 ASCII 数字单分隔紧凑计时（HHMM:SS 或 HH:MMSS）：零字母/符号折叠，
+    /// 拒绝纯六位无分隔、拒绝前后多余噪声、严格校验分秒 00–59。
+    /// 实测可精准救回原图 2x 读出的「0128：30」「0158．26」及阈值 130 读出的「00：2117」。
+    /// </summary>
+    internal static bool TryParseExactCompactedOverviewTimer(string raw, out TimeSpan remaining)
+    {
+        remaining = default;
+        string compact = Normalize(raw);
+        var match = System.Text.RegularExpressions.Regex.Match(compact,
+            @"^(?:(?<h>[0-9]{2})(?<m>[0-5][0-9])[:：．，](?<s>[0-5][0-9])|(?<h>[0-9]{2})[:：．，](?<m>[0-5][0-9])(?<s>[0-5][0-9]))$");
+        if (!match.Success) return false;
+        int h = int.Parse(match.Groups["h"].Value);
+        int m = int.Parse(match.Groups["m"].Value);
+        int s = int.Parse(match.Groups["s"].Value);
+        remaining = new TimeSpan(h, m, s);
+        return true;
     }
 
     /// <summary>整字段验证后才调用真实解析器，拒绝截断、价格、坏字符和缺失数字。</summary>

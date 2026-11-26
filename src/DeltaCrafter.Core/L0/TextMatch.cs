@@ -68,7 +68,11 @@ public static class TextMatch
         // 且只在紧接着的数字小数分隔符前出现。仅剥离这组已验证的装饰，
         // 不放宽普通名称前缀，避免把相似型号误认成目标配方。
         text = System.Text.RegularExpressions.Regex.Replace(text,
-            @"^(?:0|O|»|》|卜|>|僉)\s*(?=[0-9]\s*[\.．])", "");
+            @"^(?:0|O|»|》|卜|>|僉|※)\s*(?=[0-9]\s*[\.．])", "");
+        // 实测品质菱形图标还会落在英文字母/小数点之前（如「僉 FS 复合防弹衣」「※ .300 BLK」）；
+        // 仅剥离绝不会出现在正常物品名首位的「僉」「※」，不放宽数字/字母前缀。
+        text = System.Text.RegularExpressions.Regex.Replace(text,
+            @"^(?:僉|※)\s*(?=[A-Za-z0-9\.．])", "");
         // 「0凵GHT」属于已验证的 OLIGHT 品牌误读，首位0不是品质图标。
         if (!Canonical(text).StartsWith("0凵GHT", StringComparison.Ordinal))
             text = System.Text.RegularExpressions.Regex.Replace(text,

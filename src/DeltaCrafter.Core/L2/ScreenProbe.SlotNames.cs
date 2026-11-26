@@ -36,6 +36,7 @@ public sealed partial class ScreenProbe
     {
         value = value.Trim();
         if (value.Length == 0) return "";
+        value = Regex.Replace(value, @"^[僉※]\s*", "");
         value = value
             .Replace('．', '.')
             .Replace('·', '.')
@@ -67,7 +68,7 @@ public sealed partial class ScreenProbe
         int penalty = 0;
         foreach (char c in raw)
         {
-            if (c is '囗' or '〇' or '○') penalty += 3;
+            if (c is '囗' or '〇' or '○' or '僉' or '※') penalty += 3;
             else if (c is '、' or '，') penalty += 1;
         }
         string compact = Normalize(raw);
