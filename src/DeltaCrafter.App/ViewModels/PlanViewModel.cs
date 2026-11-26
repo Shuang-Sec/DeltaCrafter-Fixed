@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using DeltaCrafter.App.Services;
 using DeltaCrafter.Core.L0;
+using DeltaCrafter.Core.L3;
 
 namespace DeltaCrafter.App.ViewModels;
 
@@ -145,7 +146,8 @@ public sealed partial class PlanViewModel : ObservableObject
     {
         get
         {
-            const string baseText = "行情每 12 小时更新一次；切换利润模式时使用已有行情，推荐用于下次制造。";
+            string baseText = $"助手每 {ProfitPlanCoordinator.RefreshInterval.TotalHours:0} 小时读取一次行情；"
+                + "切换利润模式时使用已有行情，推荐用于下次制造。";
             string status = _host.ProfitPlan.LastStatus;
             return status.Length > 0 ? baseText + "\n" + status : baseText;
         }

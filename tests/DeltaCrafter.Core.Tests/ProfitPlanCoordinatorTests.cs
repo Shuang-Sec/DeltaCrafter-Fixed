@@ -14,19 +14,19 @@ public class ProfitPlanCoordinatorTests : IDisposable
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public void Refresh_attempt_is_followed_by_a_twelve_hour_interval(bool lastFetchSucceeded)
+    public void Refresh_attempt_is_followed_by_a_three_hour_interval(bool lastFetchSucceeded)
     {
         var now = new DateTimeOffset(
-            2026, 11, 20, 15, 17, 25, TimeSpan.FromHours(8));
+            2026, 11, 20, 22, 17, 25, TimeSpan.FromHours(8));
 
         var next = ProfitPlanCoordinator.NextRefreshAttemptAt(
             now, lastFetchSucceeded);
 
-        Assert.Equal(new DateTimeOffset(2026, 11, 21, 3, 17, 25, now.Offset), next);
+        Assert.Equal(new DateTimeOffset(2026, 11, 21, 1, 17, 25, now.Offset), next);
     }
 
     [Fact]
-    public async Task Clean_start_reads_once_and_restart_reuses_the_snapshot_until_exactly_twelve_hours()
+    public async Task Clean_start_reads_once_and_restart_reuses_the_snapshot_until_exactly_three_hours()
     {
         var clock = new TestClock();
         int fetches = 0;
@@ -38,9 +38,10 @@ public class ProfitPlanCoordinatorTests : IDisposable
         Assert.True(await first.RefreshIfDueAsync(default));
         Assert.Equal(1, fetches);
         var firstAttempt = first.State.LastAttemptAt!.Value;
-        Assert.Equal(firstAttempt.AddHours(12), first.NextAttemptAt);
+        var due = firstAttempt.AddHours(3);
+        Assert.Equal(due, first.NextAttemptAt);
 
-        clock.Now = firstAttempt.AddHours(12).AddSeconds(-1);
+        clock.Now = due.AddSeconds(-1);
         var restarted = Coordinator(clock, log, Fetch);
         Assert.False(await restarted.RefreshIfDueAsync(default));
         Assert.Equal(1, fetches);
@@ -49,7 +50,7 @@ public class ProfitPlanCoordinatorTests : IDisposable
         Assert.Equal("单次1", restarted.State.Latest.Recommendations
             .ForFacility(FacilityKey.TechCenter, CraftMode.TotalProfit).ItemName);
 
-        clock.Now = firstAttempt.AddHours(12);
+        clock.Now = due;
         var outcomes = await Task.WhenAll(restarted.RefreshIfDueAsync(default), restarted.RefreshIfDueAsync(default));
         Assert.Single(outcomes, tried => tried);
         Assert.Equal(2, fetches);
@@ -73,7 +74,7 @@ public class ProfitPlanCoordinatorTests : IDisposable
         if (hasPriorData)
         {
             Assert.True(await coordinator.RefreshIfDueAsync(default));
-            clock.Now += TimeSpan.FromHours(12);
+            clock.Now += TimeSpan.FromHours(3);
             failing = true;
         }
 
@@ -81,7 +82,7 @@ public class ProfitPlanCoordinatorTests : IDisposable
         Assert.True(await coordinator.RefreshIfDueAsync(default));
         Assert.Same(good, coordinator.State.Latest);
         Assert.Equal("模拟断线", coordinator.State.LastError);
-        Assert.Equal(clock.Now.AddHours(12), coordinator.NextAttemptAt);
+        Assert.Equal(clock.Now.AddHours(3), coordinator.NextAttemptAt);
 
         var restarted = Coordinator(clock, log,
             _ => throw new InvalidOperationException("未到期不应请求"));

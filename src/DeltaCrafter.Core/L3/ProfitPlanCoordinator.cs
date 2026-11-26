@@ -5,12 +5,12 @@ using Serilog;
 namespace DeltaCrafter.Core.L3;
 
 /// <summary>
-/// 管理发布给计划页的完整行情快照与 12 小时刷新节奏。
+/// 管理发布给计划页的完整行情快照与刷新节奏。
 /// 最近一次尝试和上次成功数据一同落盘，跨重启保留；网络失败不清空快照。
 /// </summary>
 public sealed class ProfitPlanCoordinator
 {
-    public static readonly TimeSpan RefreshInterval = TimeSpan.FromHours(12);
+    public static readonly TimeSpan RefreshInterval = TimeSpan.FromHours(3);
 
     // 保留旧核心公开成员；失败与成功现在共用刷新间隔。
     public static readonly TimeSpan FailureRetryDelay = RefreshInterval;

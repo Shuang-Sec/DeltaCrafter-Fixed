@@ -45,12 +45,13 @@ public sealed class ProfitPlanService
                             error, state.Latest is null ? "保留当前配方。" : "保留上次行情与当前配方。", next);
                     else if (state.Latest is { } latest)
                         _log.Information("利润行情已更新：{Source} 更新于 {MarketAt:yyyy-MM-dd HH:mm:ss}，"
-                            + "本机读取 {FetchedAt:HH:mm:ss}；下次尝试 {Next:yyyy-MM-dd HH:mm:ss}（12 小时后）。",
-                            latest.SourceHost, latest.MarketUpdatedAt.ToLocalTime(), latest.FetchedAt.ToLocalTime(), next);
+                            + "本机读取 {FetchedAt:HH:mm:ss}；下次尝试 {Next:yyyy-MM-dd HH:mm:ss}（{IntervalHours:0} 小时后）。",
+                            latest.SourceHost, latest.MarketUpdatedAt.ToLocalTime(), latest.FetchedAt.ToLocalTime(),
+                            next, ProfitPlanCoordinator.RefreshInterval.TotalHours);
                 }
                 else if (startup)
                 {
-                    _log.Information("利润行情仍在 12 小时刷新周期内，沿用本机记录；下次尝试 {Next:yyyy-MM-dd HH:mm:ss}。",
+                    _log.Information("利润行情未到刷新时间，沿用本机记录；下次尝试 {Next:yyyy-MM-dd HH:mm:ss}。",
                         next);
                 }
 
