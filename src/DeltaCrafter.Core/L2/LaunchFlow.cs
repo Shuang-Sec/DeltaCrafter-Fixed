@@ -275,6 +275,20 @@ public sealed class LaunchFlow
         if (!canStart()) return false;
         if (useWeGame)
         {
+            // 若选中的 WeGame 窗口仍处于隐藏托盘态且首次前台化失败，通过单实例唤起一次 WeGame 令其主动弹出真实主窗，
+            // 避免像实机日志那样因后台隐藏容器窗无法前台化而连续整夜失败。
+            launcher = await EnsureWeGameFocusOrWakeFromTrayAsync(
+                launcher,
+                hwnd => _window.TryEnsureForeground(hwnd, TimeSpan.FromSeconds(3)),
+                hwnd => _window.IsVisible(hwnd),
+                () =>
+                {
+                    _log.Information("WeGame 窗口仍处于后台隐藏态，触发单实例唤起以恢复真实主窗。");
+                    _process.Launch(configuredPath);
+                },
+                () => _window.FindWeGameLauncher(configuredPath),
+                (ms, token) => Task.Delay(ms, token),
+                ct);
             CapturedFrame? frame = null;
             return await ReadAndClickLauncherStartAsync(async token =>
                 {
@@ -293,7 +307,7 @@ public sealed class LaunchFlow
                     }
                     catch (InvalidOperationException) { return false; }
                 },
-                () => _window.TryEnsureForeground(launcher.Hwnd, TimeSpan.FromSeconds(1)),
+                () => _window.TryEnsureForeground(launcher.Hwnd, TimeSpan.FromSeconds(3)),
                 line =>
                 {
                     _log.Information("已确认WeGame三角洲详情页，点击实际启动按钮:({X},{Y})。", line.CenterX, line.CenterY);
@@ -313,6 +327,29 @@ public sealed class LaunchFlow
             return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// 当 WeGame 缩在系统托盘（窗口不可见）导致首次前台化失败时，通过再次启动 wegame.exe 触发其单实例 IPC
+    /// 弹出真实可见主窗并重新定位一次；若窗口本就可见但仍无法前台化（如管理员/锁屏阻挡），不重复拉起，保留原始失败。
+    /// </summary>
+    internal static async Task<GameWindowInfo> EnsureWeGameFocusOrWakeFromTrayAsync(
+        GameWindowInfo launcher,
+        Func<nint, bool> tryForeground,
+        Func<nint, bool> isVisible,
+        Action wakeLauncher,
+        Func<GameWindowInfo?> refindLauncher,
+        Func<int, CancellationToken, Task> delay,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (tryForeground(launcher.Hwnd)) return launcher;
+        if (isVisible(launcher.Hwnd)) return launcher;
+        ct.ThrowIfCancellationRequested();
+        wakeLauncher();
+        await delay(2000, ct);
+        ct.ThrowIfCancellationRequested();
+        return refindLauncher() ?? launcher;
     }
 
     internal static async Task<bool> ReadAndClickLauncherStartAsync(

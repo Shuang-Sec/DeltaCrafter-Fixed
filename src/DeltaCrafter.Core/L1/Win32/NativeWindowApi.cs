@@ -60,6 +60,7 @@ internal static partial class NativeWindowApi
     [DllImport("user32.dll")]
     internal static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, nuint dwExtraInfo);
 
+    internal const int SW_SHOW = 5;
     internal const int SW_RESTORE = 9;
     internal const int SW_MINIMIZE = 6;
     internal const int SM_XVIRTUALSCREEN = 76;

@@ -112,9 +112,18 @@ public sealed class GameWindowBrick
             return true;
         }, 0);
         var best = SelectWeGameLauncher(candidates, configuredPath);
-        if (restore && best is not null) NativeWindowApi.ShowWindow(best.Hwnd, NativeWindowApi.SW_RESTORE);
+        if (restore && best is not null)
+        {
+            // WeGame 缩入系统托盘时主窗 WS_VISIBLE=0；仅 SW_RESTORE 常无法立即显现，先 SW_SHOW 再 SW_RESTORE 并留出 DWM 显现帧。
+            bool wasHidden = !NativeWindowApi.IsWindowVisible(best.Hwnd);
+            if (wasHidden) NativeWindowApi.ShowWindow(best.Hwnd, NativeWindowApi.SW_SHOW);
+            NativeWindowApi.ShowWindow(best.Hwnd, NativeWindowApi.SW_RESTORE);
+            if (wasHidden) Thread.Sleep(250);
+        }
         return best;
     }
+
+    internal bool IsVisible(nint hwnd) => NativeWindowApi.IsWindow(hwnd) && NativeWindowApi.IsWindowVisible(hwnd);
 
     /// <summary>把规则匹配且处于最小化的候选窗口还原。最小化窗口取不到客户区几何,
     /// FindGameClient 的 16:9 判定必然漏过它——「保持运行(最小化)」收尾后再次执行前
@@ -176,7 +185,14 @@ public sealed class GameWindowBrick
     /// </summary>
     public bool TryEnsureForeground(nint hwnd, TimeSpan patience)
     {
-        if (NativeWindowApi.IsIconic(hwnd))
+        bool wasHidden = !NativeWindowApi.IsWindowVisible(hwnd);
+        if (wasHidden)
+        {
+            NativeWindowApi.ShowWindow(hwnd, NativeWindowApi.SW_SHOW);
+            NativeWindowApi.ShowWindow(hwnd, NativeWindowApi.SW_RESTORE);
+            Thread.Sleep(300);
+        }
+        else if (NativeWindowApi.IsIconic(hwnd))
         {
             NativeWindowApi.ShowWindow(hwnd, NativeWindowApi.SW_RESTORE);
             Thread.Sleep(400);
