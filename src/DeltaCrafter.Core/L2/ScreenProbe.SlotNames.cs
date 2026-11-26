@@ -80,6 +80,21 @@ public sealed partial class ScreenProbe
         return penalty;
     }
 
+    /// <summary>原始画面 3 个倍率（2x/1x/1.5x）全部读出有效名称且一致时，跳过后续二值化增强与 OCR。</summary>
+    internal static bool IsUnanimousSlotName(IReadOnlyList<string> readings)
+    {
+        if (readings.Count < 3) return false;
+        string first = CleanSlotName(readings[0]);
+        if (first.Length < 2) return false;
+        for (int i = 1; i < readings.Count; i++)
+        {
+            string current = CleanSlotName(readings[i]);
+            if (current.Length < 2 || !TextMatch.MatchesRecipeName(first, current))
+                return false;
+        }
+        return true;
+    }
+
     internal async Task<string[]> ReadSlotNamesFromFrameAsync(CapturedFrame frame, IReadOnlyList<NRect> slots)
     {
         // 卡片上部标题与中央物品贴图分开，避免医疗箱的 AID 等贴图字母进入名称。
@@ -87,18 +102,25 @@ public sealed partial class ScreenProbe
         {
             X=slot.X+slot.W*.04, Y=slot.Y+slot.H*.03, W=slot.W*.92, H=slot.H*.22
         }).ToArray();
-        var low = EnhanceTimerContrast(frame, rois, 100);
-        var high = EnhanceTimerContrast(frame, rois, 130);
         var result = new string[slots.Count];
         for (int index=0; index<slots.Count; index++)
         {
             var roi=rois[index];
-            var candidates = new List<string>();
+            var candidates = new List<string>(6);
             foreach(double scale in new[]{2.0,1.0,1.5})
                 candidates.Add((await _ocr.ReadAsync(frame,roi,scale)).FullText);
-            candidates.Add((await _ocr.ReadAsync(low,roi,1.5)).FullText);
-            candidates.Add((await _ocr.ReadAsync(low,roi,2.0)).FullText);
-            candidates.Add((await _ocr.ReadAsync(high,roi,2.0)).FullText);
+            // 三个原始倍率全票一致时直接定案，免去二值化增强与 3 次额外 OCR，且避免阈值抹掉小数点。
+            if (IsUnanimousSlotName(candidates))
+            {
+                result[index] = SelectSlotName(candidates);
+                continue;
+            }
+            // 仅裁剪并二值化当前标题小区域（约数十 KB），避免为单个 ROI 整帧克隆 14MB+ 像素缓冲。
+            var low = CropAndEnhanceContrast(frame, roi, 100);
+            var high = CropAndEnhanceContrast(frame, roi, 130);
+            candidates.Add((await _ocr.ReadAsync(low,null,1.5)).FullText);
+            candidates.Add((await _ocr.ReadAsync(low,null,2.0)).FullText);
+            candidates.Add((await _ocr.ReadAsync(high,null,2.0)).FullText);
             result[index]=SelectSlotName(candidates);
         }
         return result;

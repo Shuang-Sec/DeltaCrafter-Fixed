@@ -215,9 +215,7 @@ public sealed partial class AutomationCoordinator : IDisposable
             if (_runsBlocked || _autoSchedulePaused || !_settings().AutoLoopEnabled) return;
             var game = _windowBrick.FindGameClient(_settings().WindowMatch);
             if (game is null || !_windowBrick.IsForeground(game.Hwnd)) return;
-            disconnected = await _probe.IsNetworkReconnectVisibleAsync(game.Hwnd, ct);
-            if (!disconnected)
-                disconnected = await _probe.WhichScreenAsync(game.Hwnd, LaunchFlow.KnownScreens) == AnchorKeys.NetworkReconnect;
+            disconnected = await _probe.PollIdleNetworkReconnectAsync(game.Hwnd, ct);
         }
         catch (StepFailedException ex)
         {

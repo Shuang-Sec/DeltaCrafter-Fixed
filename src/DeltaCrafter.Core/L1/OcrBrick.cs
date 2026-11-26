@@ -94,25 +94,24 @@ public sealed class OcrBrick
             lineWords);
     }
 
-    /// <summary>最近邻重采样(裁剪+缩放一步完成)。识别用途下质量足够,且零额外依赖。</summary>
-    private static byte[] NearestResample(CapturedFrame f, int cx, int cy, int cw, int ch, int dw, int dh)
+    /// <summary>最近邻重采样(裁剪+缩放一步完成)。按 32 位像素整块拷贝并预计算 X 索引，零额外依赖。</summary>
+    internal static byte[] NearestResample(CapturedFrame f, int cx, int cy, int cw, int ch, int dw, int dh)
     {
         var dst = new byte[dw * dh * 4];
+        var srcPixels = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(f.Bgra.AsSpan());
+        var dstPixels = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(dst.AsSpan());
+        var xMap = new int[dw];
+        for (int x = 0; x < dw; x++)
+            xMap[x] = cx + (int)((long)x * cw / dw);
+
+        int stride = f.Width;
         for (int y = 0; y < dh; y++)
         {
             int sy = cy + (int)((long)y * ch / dh);
-            int srcRow = sy * f.Width * 4;
-            int dstRow = y * dw * 4;
+            int srcRow = sy * stride;
+            int dstRow = y * dw;
             for (int x = 0; x < dw; x++)
-            {
-                int sx2 = cx + (int)((long)x * cw / dw);
-                int si = srcRow + sx2 * 4;
-                int di = dstRow + x * 4;
-                dst[di] = f.Bgra[si];
-                dst[di + 1] = f.Bgra[si + 1];
-                dst[di + 2] = f.Bgra[si + 2];
-                dst[di + 3] = f.Bgra[si + 3];
-            }
+                dstPixels[dstRow + x] = srcPixels[srcRow + xMap[x]];
         }
         return dst;
     }

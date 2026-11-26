@@ -15,6 +15,13 @@
 
 ## [Unreleased]
 
+### 2026-11-26 内存、空闲轮询性能与诊断截图自动留存优化
+
+- **消除槽位二值化整帧 LOH 克隆**：新增 `ScreenProbe.CropAndEnhanceContrast`，仅裁剪并二值化目标小 ROI（约数十 KB），替代原先每遍 5–6 次整帧克隆 1440p 图像（每次约 14.75MB）的大对象堆分配；测试验证与原整帧增强逐像素一致。
+- **原始三倍率全票一致短路与重采样加速**：`ReadSlotNamesFromFrameAsync` 在原始画面 2x/1x/1.5x 全部一致时直接定案，省去后续二值化增强与 3 次 OCR 并减少阈值抹掉小数点的风险；`OcrBrick.NearestResample` 改用 X 索引预计算与 32 位像素整块拷贝。
+- **空闲断线监测减负**：`ScreenProbe.PollIdleNetworkReconnectAsync` 改为单帧复用（原每 10 秒截两帧），且仅刷新可安全重启的场景证据（大厅/特勤处/模式选择/特勤基地），跳过高开销的收藏室多区域 OCR，大幅降低挂机 CPU 与调试日志刷屏。
+- **诊断截图自动留存清理**：新增 `ShotRetention`，启动与诊断转储后自动按组（`.png`/`.txt`/`.crop.png`/`.json`）清理 `shots/` 目录内超过 14 天或超过 80 组的旧诊断文件，防止长期运行导致磁盘持续膨胀。
+
 ### 2026-11-26 导航词级定位、操作按钮/详情计时 OCR 与列表双倍率补强
 
 - **大厅顶栏「特勤处」词级定位与过渡重试**：`OcrBrick` 新增内部逐词边界框读取（不改变公开接口），当 Windows OCR 把顶栏相邻标签合并为同一行（如「交易行 特勤处 改枪台」）时，`ScreenProbe.SelectSpecOpsEntryFromWords` 仍可精确提取唯一「特勤处」标签中心（排除「进入特勤处」与歧义重名）；`SpecOpsNavFlow` 在过渡渐入期最多重试 3 帧（不回退固定坐标）。

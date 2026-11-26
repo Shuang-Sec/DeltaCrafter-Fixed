@@ -127,8 +127,8 @@ public sealed partial class ScreenProbe
         async Task<string> ReadLabel(NRect roi, int threshold)
         {
             ct.ThrowIfCancellationRequested();
-            var enhanced = EnhanceTimerContrast(frame, new[] { roi }, threshold);
-            return (await _ocr.ReadAsync(enhanced, roi, 2.0)).FullText;
+            var enhanced = CropAndEnhanceContrast(frame, roi, threshold);
+            return (await _ocr.ReadAsync(enhanced, roi: null, 2.0)).FullText;
         }
         string page = await ReadLabel(titleRoi, 170) + "\n" + await ReadLabel(modeRoi, 200)
             + "\n" + await ReadLabel(secondRoi, 90);
@@ -171,6 +171,26 @@ public sealed partial class ScreenProbe
         ct.ThrowIfCancellationRequested();
         return dialog.Detected && _networkEpisodeSafeForRestart == true
             && IsSafeToRestartAfterNetworkReconnectText(dialog.Message + dialog.Confirm + dialog.ReturnLogin + "\n" + full);
+    }
+
+    internal static readonly string[] RestartSafeScreens =
+        [AnchorKeys.Lobby, AnchorKeys.SpecOpsHome, AnchorKeys.ModeSelect, AnchorKeys.Safehouse];
+
+    /// <summary>
+    /// 空闲断线监测专用单帧探测：只截一帧，先检断线弹窗；未断线时仅刷新可安全重启的场景证据
+    /// （大厅/特勤处/模式选择/特勤基地），跳过高开销的收藏室多区域 OCR，显著降低后台挂机 CPU 与日志量。
+    /// </summary>
+    internal async Task<bool> PollIdleNetworkReconnectAsync(nint hwnd, CancellationToken ct)
+    {
+        var frame = Capture(hwnd);
+        if ((await ReadNetworkReconnectFromFrameAsync(frame, ct)).Detected) return true;
+        foreach (var screen in RestartSafeScreens)
+        {
+            if (await MatchScreenFromFrameAsync(frame, screen, ct))
+                return false;
+        }
+        RecordKnownScene(null);
+        return false;
     }
 
     internal static bool IsRecentRestartSafeScene(string? scene, long ageMs) =>
@@ -662,25 +682,26 @@ public sealed partial class ScreenProbe
     internal async Task<CountdownOcrReadout[]> ReadCountdownRoisFromFrameAsync(CapturedFrame frame,
         IReadOnlyList<NRect> rois, bool labelledDetail)
     {
-        var enhancedFrames = new Dictionary<int, CapturedFrame>();
         var result = new CountdownOcrReadout[rois.Count];
         for (int index = 0; index < rois.Count; index++)
         {
+            var roi = rois[index];
+            var enhancedCrops = new Dictionary<int, CapturedFrame>();
             int? lastThreshold = null;
             double lastScale = 2;
             result[index] = await ReadCountdownCandidatesAsync(labelledDetail, async (threshold, scale) =>
             {
                 lastThreshold = threshold; lastScale = scale;
-                var source = frame;
                 if (threshold is { } t)
                 {
-                    if (!enhancedFrames.TryGetValue(t, out source!))
+                    if (!enhancedCrops.TryGetValue(t, out var cropped))
                     {
-                        source = EnhanceTimerContrast(frame, rois, t);
-                        enhancedFrames.Add(t, source);
+                        cropped = CropAndEnhanceContrast(frame, roi, t);
+                        enhancedCrops.Add(t, cropped);
                     }
+                    return (await _ocr.ReadAsync(cropped, roi: null, scale)).FullText;
                 }
-                return (await _ocr.ReadAsync(source, rois[index], scale)).FullText;
+                return (await _ocr.ReadAsync(frame, roi, scale)).FullText;
             });
             if (labelledDetail)
             {
@@ -689,13 +710,9 @@ public sealed partial class ScreenProbe
                     // 实测制药详情的标签和时钟会把 08:00:47 连成「& 剩余时间：08℃0：47」。
                     // 保留原候选优先，只在全部失败后读同帧右侧数字区；不按 ℃/& 猜数字。
                     const int threshold = 80;
-                    if (!enhancedFrames.TryGetValue(threshold, out var source))
-                    {
-                        source = EnhanceTimerContrast(frame, rois, threshold);
-                        enhancedFrames.Add(threshold, source);
-                    }
+                    var digitsCrop = CropAndEnhanceContrast(frame, DetailDigitsRoi(roi), threshold);
                     lastThreshold = threshold; lastScale = 1.5;
-                    return (await _ocr.ReadAsync(source, DetailDigitsRoi(rois[index]), 1.5)).FullText;
+                    return (await _ocr.ReadAsync(digitsCrop, roi: null, 1.5)).FullText;
                 });
             }
             if (result[index].Remaining is not null &&
@@ -814,6 +831,33 @@ public sealed partial class ScreenProbe
     private static bool HasCompleteTimerReadout(string text) =>
         System.Text.RegularExpressions.Regex.IsMatch(Normalize(text),
             @"^[0-9]{1,3}[:：．，][0-5][0-9][:：．，][0-5][0-9]$");
+
+    /// <summary>仅裁剪并二值化目标 ROI 像素（数十 KB），与整帧 EnhanceTimerContrast 后裁切逐像素等价，
+    /// 但完全消除 1440p 下反复克隆 14MB+ 大对象堆(LOH)的内存压力。</summary>
+    internal static CapturedFrame CropAndEnhanceContrast(CapturedFrame frame, NRect roi, int threshold = 150)
+    {
+        var (left, top, width, height) = PixelMapper.ToPixelRect(roi, frame.Width, frame.Height);
+        var pixels = new byte[width * height * 4];
+        var src = frame.Bgra;
+        int srcStride = frame.Width * 4;
+        int dstStride = width * 4;
+        for (int row = 0; row < height; row++)
+        {
+            int srcRow = (top + row) * srcStride + left * 4;
+            int dstRow = row * dstStride;
+            for (int col = 0; col < width; col++)
+            {
+                int si = srcRow + col * 4;
+                int di = dstRow + col * 4;
+                byte value = (byte)((src[si] + src[si + 1] + src[si + 2]) / 3 >= threshold ? 255 : 0);
+                pixels[di] = value;
+                pixels[di + 1] = value;
+                pixels[di + 2] = value;
+                pixels[di + 3] = src[si + 3];
+            }
+        }
+        return new CapturedFrame(width, height, pixels);
+    }
 
     internal static CapturedFrame EnhanceTimerContrast(CapturedFrame frame, IReadOnlyList<NRect> timers,
         int threshold = 150)
@@ -946,6 +990,7 @@ public sealed partial class ScreenProbe
         var readout = await _ocr.ReadAsync(frame, roi: null, upscale: 1.0);
         await File.WriteAllTextAsync(Path.ChangeExtension(png, ".txt"), readout.FullText);
         _log.Information("已保存诊断截图:{Png}", png);
+        ShotRetention.TryPrune(_shotsDir, _log);
         return (png, readout.FullText);
     }
 

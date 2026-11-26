@@ -115,6 +115,7 @@ public sealed class AppHost : ICatalogSink, ICatalogLookup, IAppWindowGuard
         ProfitPlan = new ProfitPlanService(this,
             new ProfitPlanCoordinator(Path.Combine(Paths.Root, "profit-market.json"), Store, Log), Log);
 
+        _ = Task.Run(() => ShotRetention.TryPrune(Paths.ShotsDir, Log));
         _ = Task.Run(() => Coordinator.RunSchedulerLoopAsync(_appStop.Token));
         _ = Task.Run(() => ProfitPlan.RunLoopAsync(_appStop.Token));
     }
