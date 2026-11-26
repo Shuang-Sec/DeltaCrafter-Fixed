@@ -72,14 +72,18 @@ public sealed class CraftStartFlow
                 await EscBackToHomeAsync(hwnd, ct);
                 return new CraftStartResult(false, null, "材料不足(自动补齐已关闭)");
             }
-            // 购买是有副作用的动作，只允许点击一次；并行等待成功按钮或仓库已满 Toast，
-            // 打开清单的 OCR 返回成功后也必须重新检查停止请求，避免停止后继续花钱。
+            // 购买是有副作用的动作，只允许点击一次；打开补齐清单后短暂稳定 450ms，
+            // 等待弹窗渐入与交易行实时报价加载完毕再点击总价按钮，并重新检查停止请求。
             await BuyMaterialsOnceAsync(
-                () => _runner.RunAsync(hwnd, new Step(
-                    "打开一键补齐清单",
-                    () => _probe.ClickPoint(hwnd, AnchorKeys.Production, AnchorKeys.PointActionButton),
-                    () => _probe.IsOnAsync(hwnd, AnchorKeys.ReplenishPopup),
-                    TimeSpan.FromSeconds(10)), ct),
+                async () =>
+                {
+                    await _runner.RunAsync(hwnd, new Step(
+                        "打开一键补齐清单",
+                        () => _probe.ClickPoint(hwnd, AnchorKeys.Production, AnchorKeys.PointActionButton),
+                        () => _probe.IsOnAsync(hwnd, AnchorKeys.ReplenishPopup),
+                        TimeSpan.FromSeconds(10)), ct);
+                    await Task.Delay(450, ct);
+                },
                 () =>
                 {
                     _log.Information("{Facility}「{Item}」缺料,自动购买(金额随交易行波动,见游戏账单)。", facility, displayName);
@@ -92,6 +96,14 @@ public sealed class CraftStartFlow
                 await EscBackToHomeAsync(hwnd, ct);
                 return new CraftStartResult(false, null, "一键补齐后材料仍不足(可能含需兑换材料)");
             }
+        }
+
+        if (IsLockedRecipeLabel(label))
+        {
+            // 实测低等级工位选中高等级配方时按钮显示「等级3解锁」等；单设施标需人工，不中断其余设施。
+            _log.Warning("{Facility}「{Item}」当前设施等级未解锁({Label})，退出生产页并标记需人工。", facility, displayName, label);
+            await EscBackToHomeAsync(hwnd, ct);
+            return new CraftStartResult(false, null, $"设施等级未解锁该配方({label})");
         }
 
         if (!LabelHits(label, kw.ButtonProduce))
@@ -176,28 +188,44 @@ public sealed class CraftStartFlow
         string previousView = "";
         bool reachedBottom = false;
         // 滚动直到找到 / 列表内容不再变化(到底或滚动无效) / 安全上限。每页单次截帧，2x 未命中时同帧 1.5x 回退防漏行。
+        int scrolledPages = 0;
         for (int page = 0; page < MaxScrollPages; page++)
         {
             ct.ThrowIfCancellationRequested();
-            var frame = _probe.Capture(hwnd);
-            var lines = await _probe.ReadAreaLinesFromFrameAsync(frame, listArea, 2.0);
-            line = PickLine(lines, searchName, page);
-            if (line is null)
+            var (hit, currentView) = await ScanListPageAsync(hwnd, listArea, searchName, page, ct);
+            if (hit is null && page == 0)
             {
-                var fallbackLines = await _probe.ReadAreaLinesFromFrameAsync(frame, listArea, 1.5);
-                line = PickLine(fallbackLines, searchName, page);
+                // 刚切入生产页时「全部类型」常先于下方配方卡片渐入；首页未命中前停顿复读一次，避免直接滚过置顶配方。
+                await Task.Delay(350, ct);
+                (hit, currentView) = await ScanListPageAsync(hwnd, listArea, searchName, page, ct);
             }
-            if (line is not null) break;
+            if (hit is not null) { line = hit; break; }
 
-            string currentView = ScreenProbe.Normalize(string.Concat(lines.Select(l => l.Text)));
             if (currentView.Length > 0 && currentView == previousView)
             {
                 reachedBottom = true;
                 break;
             }
             previousView = currentView;
+            scrolledPages++;
             _probe.ScrollRoi(hwnd, listArea, -5);
             await Task.Delay(700, ct);
+        }
+
+        // 若列表初始处于下方位置或下滑过快漏过顶部项，触底后向上回扫一次直至回到顶部。
+        if (line is null && reachedBottom && scrolledPages > 0)
+        {
+            string prevUpView = previousView;
+            for (int upPage = 0; upPage < MaxScrollPages; upPage++)
+            {
+                ct.ThrowIfCancellationRequested();
+                _probe.ScrollRoi(hwnd, listArea, +8);
+                await Task.Delay(650, ct);
+                var (hit, currentView) = await ScanListPageAsync(hwnd, listArea, searchName, upPage, ct);
+                if (hit is not null) { line = hit; break; }
+                if (currentView.Length > 0 && currentView == prevUpView) break;
+                prevUpView = currentView;
+            }
         }
         if (line is null)
         {
@@ -240,6 +268,22 @@ public sealed class CraftStartFlow
             : await _probe.DumpAsync(hwnd, "fail-选中物品");
         throw new StepFailedException($"选中物品「{displayName}」",
             $"点击后详情标题未出现该物品。诊断截图:{png2}", png2, dump2);
+    }
+
+    private async Task<(OcrLine? Hit, string NormalizedView)> ScanListPageAsync(
+        nint hwnd, NRect listArea, string searchName, int page, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var frame = _probe.Capture(hwnd);
+        var lines = await _probe.ReadAreaLinesFromFrameAsync(frame, listArea, 2.0);
+        var hit = PickLine(lines, searchName, page);
+        if (hit is null)
+        {
+            var fallbackLines = await _probe.ReadAreaLinesFromFrameAsync(frame, listArea, 1.5);
+            hit = PickLine(fallbackLines, searchName, page);
+        }
+        string view = ScreenProbe.Normalize(string.Concat(lines.Select(l => l.Text)));
+        return (hit, view);
     }
 
     /// <summary>页内只选择完整配方身份匹配的行；型号字符和后缀不使用编辑距离猜测。</summary>
@@ -285,6 +329,20 @@ public sealed class CraftStartFlow
             }
             if (await _probe.IsOnAsync(hwnd, AnchorKeys.WarehouseFull))
                 throw new WarehouseFullException($"{facility}补齐「{displayName}」材料");
+            if (await _probe.IsSoldOutToastVisibleAsync(hwnd, ct))
+            {
+                _log.Warning("{Facility}「{Item}」补齐购买时交易行商品已售罄，尝试退出补齐弹窗。", facility, displayName);
+                if (await _probe.IsOnAsync(hwnd, AnchorKeys.ReplenishPopup))
+                {
+                    await _runner.RunAsync(hwnd, new Step(
+                        "关闭售罄补齐清单",
+                        () => _input.PressEscape(),
+                        () => _probe.IsOnAsync(hwnd, AnchorKeys.Production),
+                        TimeSpan.FromSeconds(6), RetryOnce: false), ct);
+                }
+                throw new StepFailedException("确认购买缺料",
+                    $"{facility}补齐「{displayName}」时部分商品已售罄、购买失败，已退出补齐弹窗等待重试。");
+            }
 
             if (await _probe.IsOnAsync(hwnd, AnchorKeys.Production))
             {
@@ -329,7 +387,8 @@ public sealed class CraftStartFlow
             label = ScreenProbe.Normalize(texts[0]);
             if (LabelHits(label, keywords.ButtonProduce) ||
                 IsReplenishLabel(label, keywords.ButtonReplenish) ||
-                LabelHits(label, keywords.ButtonAbort))
+                LabelHits(label, keywords.ButtonAbort) ||
+                IsLockedRecipeLabel(label))
             {
                 _log.Debug("操作按钮({Scale}x):{Label}", scale, label);
                 return label;
@@ -348,6 +407,16 @@ public sealed class CraftStartFlow
          normalizedLabel.Contains("一卜齐", StringComparison.Ordinal) ||
          normalizedLabel.Contains("一健补齐", StringComparison.Ordinal) ||
          normalizedLabel.Contains("一补齐", StringComparison.Ordinal));
+
+    /// <summary>未解锁配方按钮判定（实测「等级3解锁」「立等级彐解锁」「Lv.3解锁」）：单设施标记需人工，不中断整轮。</summary>
+    internal static bool IsLockedRecipeLabel(string normalizedLabel) =>
+        normalizedLabel.Length > 0 &&
+        !normalizedLabel.Contains("生产", StringComparison.Ordinal) &&
+        !normalizedLabel.Contains("中止", StringComparison.Ordinal) &&
+        !normalizedLabel.Contains("补齐", StringComparison.Ordinal) &&
+        normalizedLabel.Contains("解锁", StringComparison.Ordinal) &&
+        (normalizedLabel.Contains("等级", StringComparison.Ordinal) ||
+         normalizedLabel.Contains("LV", StringComparison.OrdinalIgnoreCase));
 
     private static bool LabelHits(string normalizedLabel, IEnumerable<string> keywords) =>
         keywords.Any(k => k.Length > 0 &&

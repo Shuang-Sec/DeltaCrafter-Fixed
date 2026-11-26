@@ -77,11 +77,30 @@ public sealed partial class ScreenProbe
         Normalize(continuation).Contains("继续",StringComparison.Ordinal)
         && Normalize(acquire).Contains("前往获取",StringComparison.Ordinal);
 
+    /// <summary>
+    /// 实测「赛季通行证进度」弹窗底部为「[Space] 继续」，按 ESC 无效（曾连续按 8 次 ESC 超限失败）；
+    /// 识别顶部标题 + 底部「继续」后统一交由空格跳过。
+    /// </summary>
+    internal static bool IsSeasonPassProgressText(string title, string continuation)
+    {
+        string top = Normalize(title);
+        return Normalize(continuation).Contains("继续", StringComparison.Ordinal)
+            && (top.Contains("赛季通行证", StringComparison.Ordinal)
+                || top.Contains("通行证进度", StringComparison.Ordinal));
+    }
+
     internal async Task<bool> ReadStartupPromoFromFrameAsync(CapturedFrame frame,CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         // 暗色小字与空格图标分开读取，避免图标和“继”粘连；原图验证需4倍字号。
         string continuation=(await _ocr.ReadAsync(frame,new NRect{X=.50,Y=.94,W=.03,H=.04},4.0)).FullText;
+        if(!Normalize(continuation).Contains("继续",StringComparison.Ordinal))
+            continuation=(await _ocr.ReadAsync(frame,new NRect{X=.42,Y=.925,W=.16,H=.062},2.0)).FullText;
+        if(!Normalize(continuation).Contains("继续",StringComparison.Ordinal))
+            return false;
+        // 先检「赛季通行证进度」标题（实机 2560×1440 位于顶部中央），单次读取即可判定。
+        string title=(await _ocr.ReadAsync(frame,new NRect{X=.32,Y=.06,W=.36,H=.10},1.5)).FullText;
+        if(IsSeasonPassProgressText(title,continuation))return true;
         foreach(double scale in new[]{1.5,1.0,2.0})
         {
             ct.ThrowIfCancellationRequested();
@@ -448,7 +467,11 @@ public sealed partial class ScreenProbe
     internal static bool IsLobbyMenuHeader(string text)
     {
         string header = Normalize(text);
-        return header.Contains("开始游戏", StringComparison.Ordinal)
+        // 实测顶栏小字「开始游戏」常把「戏」误读为「观」或「难」；仍强制同时包含「仓库」与「特勤处」。
+        bool hasStart = header.Contains("开始游戏", StringComparison.Ordinal)
+            || header.Contains("开始游观", StringComparison.Ordinal)
+            || header.Contains("开始游难", StringComparison.Ordinal);
+        return hasStart
             && header.Contains("仓库", StringComparison.Ordinal)
             && header.Contains("特勤处", StringComparison.Ordinal);
     }
@@ -570,7 +593,8 @@ public sealed partial class ScreenProbe
 
     /// <summary>
     /// 顶部 Toast 区域内的仓库空间不足判定：除配置的「仓库空间不足」外，
-    /// 实机还出现「仓库找不到可以容纳XXX的位置」（仓库格子碎片化装不下大体积材料）与「仓库已满」。
+    /// 实机还出现「仓库找不到可以容纳XXX的位置」（仓库格子碎片化装不下大体积材料）、
+    /// 「仓库已满」以及 OCR 漏掉单字「库/仓」的「仓空间不足」「库空间不足」。
     /// 仅在 warehouse-full 顶部 Toast ROI 调用，不匹配普通仓库页标题。
     /// </summary>
     internal static bool IsWarehouseFullText(string text, string configuredKeyword = "仓库空间不足")
@@ -584,7 +608,29 @@ public sealed partial class ScreenProbe
             || (normalized.Contains("找不到可以容纳", StringComparison.Ordinal)
                 && normalized.Contains("位置", StringComparison.Ordinal))
             || normalized.Contains("仓库已满", StringComparison.Ordinal)
-            || normalized.Contains("仓库空间不足", StringComparison.Ordinal);
+            || normalized.Contains("仓库空间不足", StringComparison.Ordinal)
+            || normalized.Contains("仓空间不足", StringComparison.Ordinal)
+            || normalized.Contains("库空间不足", StringComparison.Ordinal);
+    }
+
+    /// <summary>顶部 Toast 区域内的「商品已售罄，购买失败」判定，用于避免补齐购买干等 15 秒超时。</summary>
+    internal static bool IsSoldOutToastText(string text)
+    {
+        string normalized = Normalize(text);
+        if (normalized.Length == 0) return false;
+        return normalized.Contains("已售罄", StringComparison.Ordinal)
+            || (normalized.Contains("售罄", StringComparison.Ordinal)
+                && normalized.Contains("购买失败", StringComparison.Ordinal));
+    }
+
+    internal async Task<bool> IsSoldOutToastVisibleAsync(nint hwnd, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var frame = Capture(hwnd);
+        var roi = new NRect { X = 0.36, Y = 0.12, W = 0.28, H = 0.09 };
+        string text = (await _ocr.ReadAsync(frame, roi, 1.5)).FullText;
+        ct.ThrowIfCancellationRequested();
+        return IsSoldOutToastText(text);
     }
 
     internal static bool IsSpecOpsHomeProbeText(string text, string mustContain)
