@@ -4,8 +4,15 @@ using Serilog;
 
 namespace DeltaCrafter.Core.L2;
 
-/// <summary>单件待上架请求（来自本轮刚领取的设施产物）。</summary>
-public sealed record MarketSellRequest(FacilityKey Facility, string DisplayName, string MatchName);
+/// <summary>单件待上架请求（来自本轮刚领取的设施产物）。
+/// 当 ExpectedPresetName 非空时，L2 流程会在搜索前与上架弹窗确认前双重强制核验其与当前制造计划预设完全一致，
+/// 防止用户手动制造的贵重物品被自动上架。</summary>
+public sealed record MarketSellRequest(
+    FacilityKey Facility,
+    string DisplayName,
+    string MatchName,
+    string? ExpectedPresetName = null,
+    string? ExpectedPresetMatchName = null);
 
 public enum MarketSellStatus
 {
@@ -13,6 +20,8 @@ public enum MarketSellStatus
     Listed,
     /// <summary>只读验收模式：已定位并打开「△ 上架物品」核对全名与收益，未点击上架并已 ESC 退出。</summary>
     DryRunVerified,
+    /// <summary>刚领取物品与当前制造计划预设不一致（可能为手动制造贵重物品），已保护留仓拒卖。</summary>
+    SkippedPresetMismatch,
     /// <summary>交易行上架栏位已满，自动跳过。</summary>
     SkippedSlotsFull,
     /// <summary>仅命中带左下角绑定角标的格子，拒点并跳过。</summary>
@@ -73,12 +82,29 @@ public sealed class MarketSellFlow
         if (items.Count == 0)
             return new MarketSellBatchResult([]);
 
+        // L2 纵深防御：在进入交易行之前先过滤任何与预设不一致的请求，绝不把手动制造的贵重物品带入上架流程。
+        var preOutcomes = new List<MarketSellItemOutcome>();
+        var allowedItems = new List<MarketSellRequest>(items.Count);
+        foreach (var req in items)
+        {
+            if (IsRequestAllowedByPreset(req, out string mismatchReason))
+                allowedItems.Add(req);
+            else
+            {
+                _log.Warning("{Facility}「{Item}」未通过预设一致校验:{Reason}，已保护留仓、绝不上架。",
+                    FacilityKeys.DisplayName(req.Facility), req.DisplayName, mismatchReason);
+                preOutcomes.Add(new MarketSellItemOutcome(req, MarketSellStatus.SkippedPresetMismatch, mismatchReason));
+            }
+        }
+        if (allowedItems.Count == 0)
+            return new MarketSellBatchResult(preOutcomes);
+
         int adjustSteps = Math.Clamp(priceAdjustSteps, 0, 3);
         if (!await EnsureOnMarketSellAsync(hwnd, ct))
         {
-            var skipped = items.Select(req => new MarketSellItemOutcome(
-                req, MarketSellStatus.SkippedSafetyGuard, "未能确认进入交易行「出售」页面，已跳过自动上架")).ToList();
-            return new MarketSellBatchResult(skipped);
+            preOutcomes.AddRange(allowedItems.Select(req => new MarketSellItemOutcome(
+                req, MarketSellStatus.SkippedSafetyGuard, "未能确认进入交易行「出售」页面，已跳过自动上架")));
+            return new MarketSellBatchResult(preOutcomes);
         }
 
         var initialFrame = _probe.Capture(hwnd);
@@ -90,16 +116,16 @@ public sealed class MarketSellFlow
             {
                 string reason = $"交易行上架栏位已满({slots.Used}/{slots.Max})";
                 _log.Information("{Reason}，本轮跳过自动上架。", reason);
-                return new MarketSellBatchResult(
-                    items.Select(req => new MarketSellItemOutcome(req, MarketSellStatus.SkippedSlotsFull, reason)).ToList(),
-                    initialSlots);
+                preOutcomes.AddRange(allowedItems.Select(req =>
+                    new MarketSellItemOutcome(req, MarketSellStatus.SkippedSlotsFull, reason)));
+                return new MarketSellBatchResult(preOutcomes, initialSlots);
             }
         }
 
-        var outcomes = new List<MarketSellItemOutcome>(items.Count);
+        var outcomes = new List<MarketSellItemOutcome>(preOutcomes);
         int remainingSlots = initialSlots is { } s ? Math.Max(0, s.Max - s.Used) : int.MaxValue;
 
-        foreach (var req in items)
+        foreach (var req in allowedItems)
         {
             ct.ThrowIfCancellationRequested();
             if (!dryRun && remainingSlots <= 0)
@@ -117,6 +143,44 @@ public sealed class MarketSellFlow
         }
 
         return new MarketSellBatchResult(outcomes, initialSlots);
+    }
+
+    /// <summary>
+    /// L2 预设一致性校验（纯函数）：若请求携带 ExpectedPresetName，要求待售物与预设严格全名一致，
+    /// 彻底杜绝手动制造的贵重物品或目录外未知物品被误卖。
+    /// </summary>
+    internal static bool IsRequestAllowedByPreset(MarketSellRequest req, out string reason)
+    {
+        reason = "";
+        if (string.IsNullOrWhiteSpace(req.DisplayName) && string.IsNullOrWhiteSpace(req.MatchName))
+        {
+            reason = "待上架物品名称为空，拒绝上架";
+            return false;
+        }
+        if (string.IsNullOrWhiteSpace(req.ExpectedPresetName) && string.IsNullOrWhiteSpace(req.ExpectedPresetMatchName))
+            return true;
+
+        string presetDisplay = req.ExpectedPresetName ?? "";
+        string presetMatch = req.ExpectedPresetMatchName ?? "";
+        bool displayOk = req.DisplayName.Length > 0 &&
+            ScreenProbe.MatchesTargetItemName(req.DisplayName, presetDisplay, presetMatch);
+        bool rawOk = req.MatchName.Length > 0 &&
+            ScreenProbe.MatchesTargetItemName(req.MatchName, presetDisplay, presetMatch);
+        if (displayOk || rawOk)
+            return true;
+
+        reason = $"物品「{req.DisplayName}」与计划预设「{presetDisplay}」不一致，已保护留仓";
+        return false;
+    }
+
+    private async Task<bool> IsModalTitleAllowedForRequestAsync(CapturedFrame frame, MarketSellRequest req, CancellationToken ct)
+    {
+        if (!await _probe.IsListingTitleMatchAsync(frame, req.DisplayName, req.MatchName, ct))
+            return false;
+        if (!string.IsNullOrWhiteSpace(req.ExpectedPresetName) || !string.IsNullOrWhiteSpace(req.ExpectedPresetMatchName))
+            return await _probe.IsListingTitleMatchAsync(
+                frame, req.ExpectedPresetName ?? "", req.ExpectedPresetMatchName ?? "", ct);
+        return true;
     }
 
     private async Task<bool> EnsureOnMarketSellAsync(nint hwnd, CancellationToken ct)
@@ -301,7 +365,7 @@ public sealed class MarketSellFlow
         CancellationToken ct)
     {
         var snapshot = await _probe.ReadListingModalFromFrameAsync(openedFrame, ct);
-        bool titleMatched = await _probe.IsListingTitleMatchAsync(openedFrame, req.DisplayName, req.MatchName, ct);
+        bool titleMatched = await IsModalTitleAllowedForRequestAsync(openedFrame, req, ct);
 
         if (!titleMatched)
         {
@@ -350,7 +414,7 @@ public sealed class MarketSellFlow
             {
                 var preClickFrame = _probe.Capture(hwnd);
                 var preSnap = await _probe.ReadListingModalFromFrameAsync(preClickFrame, ct);
-                bool preTitleOk = await _probe.IsListingTitleMatchAsync(preClickFrame, req.DisplayName, req.MatchName, ct);
+                bool preTitleOk = await IsModalTitleAllowedForRequestAsync(preClickFrame, req, ct);
                 return preSnap.IsSafe && preTitleOk;
             },
             () => _probe.ClickPoint(hwnd, AnchorKeys.MarketListing, AnchorKeys.PointConfirmList),

@@ -49,7 +49,7 @@
                         <Grid>
                             <StackPanel Grid.Column="0" Spacing="2">
                                 <TextBlock Text="领取后自动上架交易行" Style="{StaticResource CardTitleTextStyle}" />
-                                <TextBlock Text="开启后从交易行「出售」页自动上架刚领取的非绑定产物(绝不卖给军需处);栏位已满或绑定物品自动跳过。"
+                                <TextBlock Text="仅从交易行「出售」页上架与当前制造计划预设完全一致的非绑定产物；手动造的其他物品、绑定物品或满售位将自动跳过保护，绝不卖给军需处。"
                                            Style="{StaticResource SecondaryTextStyle}" />
                             </StackPanel>
                             <ToggleSwitch HorizontalAlignment="Right"

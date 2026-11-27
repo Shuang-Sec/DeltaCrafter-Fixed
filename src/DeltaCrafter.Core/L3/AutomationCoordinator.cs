@@ -381,8 +381,17 @@ public sealed partial class AutomationCoordinator : IDisposable
                         {
                             string collectedDisplay = DisplayItem(fp.Key, obs.ItemName);
                             report.Add($"{name}已领取「{collectedDisplay}」");
-                            if (fp.AutoSell && collectedDisplay.Length > 0)
-                                collectedForSale.Add(new MarketSellRequest(fp.Key, collectedDisplay, obs.ItemName));
+                            if (currentSettings.AutoSellCraftedItems && fp.AutoSell)
+                            {
+                                var sellReq = TryCreateAutoSellRequest(fp, collectedDisplay, obs.ItemName, out string protectReason);
+                                if (sellReq is not null)
+                                    collectedForSale.Add(sellReq);
+                                else if (protectReason.Length > 0)
+                                {
+                                    _log.Warning("{Facility}自动上架已拦截保护:{Reason}", name, protectReason);
+                                    report.Add($"{name}{protectReason}");
+                                }
+                            }
                             await StartCraftForAsync(launch.Hwnd, fp, autoReplenishMaterials, report, blocked, ct);
                         }, ct);
                     break;
@@ -444,6 +453,55 @@ public sealed partial class AutomationCoordinator : IDisposable
         _log.Information("{Facility}领取检查点已保存:当前空闲，等待下一次开工。", FacilityKeys.DisplayName(key));
         ct.ThrowIfCancellationRequested();
         await continueCraft();
+    }
+
+    /// <summary>
+    /// 手动制造贵重物品防误卖红线（纯函数，L3 第一道预设闸门）：
+    /// 仅当设施勾选自动上架、当前制造计划已配置明确预设物品、且刚领取的物品名与预设严格全名一致
+    /// （TextMatch.MatchesRecipeName，保留全部型号/等级后缀差异）时才允许生成上架请求；
+    /// 凡是用户手动制造的其他物品、名称识别为空或与预设不符的产物，一律保护留仓并明确记录原因。
+    /// </summary>
+    internal static MarketSellRequest? TryCreateAutoSellRequest(
+        FacilityPlan plan,
+        string collectedDisplay,
+        string collectedRaw,
+        out string protectReason)
+    {
+        protectReason = "";
+        if (!plan.AutoSell)
+            return null;
+
+        if (string.IsNullOrWhiteSpace(plan.ItemName))
+        {
+            protectReason = "未配置制造预设，刚领取物品已保护留仓未上架";
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(collectedDisplay) && string.IsNullOrWhiteSpace(collectedRaw))
+        {
+            protectReason = "刚领取物品名称未识别清楚，已保护留仓未上架";
+            return null;
+        }
+
+        bool matchesPreset =
+            (!string.IsNullOrWhiteSpace(collectedDisplay) &&
+             ScreenProbe.MatchesTargetItemName(collectedDisplay, plan.ItemName, plan.SearchName)) ||
+            (!string.IsNullOrWhiteSpace(collectedRaw) &&
+             ScreenProbe.MatchesTargetItemName(collectedRaw, plan.ItemName, plan.SearchName));
+
+        if (!matchesPreset)
+        {
+            string shown = string.IsNullOrWhiteSpace(collectedDisplay) ? collectedRaw : collectedDisplay;
+            protectReason = $"刚领取的「{shown}」与计划预设「{plan.ItemName}」不一致(疑似手动制造)，已保护留仓绝不上架";
+            return null;
+        }
+
+        return new MarketSellRequest(
+            plan.Key,
+            plan.ItemName,
+            plan.SearchName,
+            ExpectedPresetName: plan.ItemName,
+            ExpectedPresetMatchName: plan.SearchName);
     }
 
     /// <summary>

@@ -380,6 +380,95 @@ public class MarketSellFlowTests
         Assert.Contains("不影响本轮制造调度", report2.Summary());
     }
 
+    [Fact]
+    public void TryCreateAutoSellRequest_blocks_manually_crafted_precious_item_that_differs_from_preset()
+    {
+        var plan = new FacilityPlan
+        {
+            Key = FacilityKey.ArmorStation,
+            Enabled = true,
+            AutoSell = true,
+            ItemName = "重型突击背心",
+            MatchName = "重型突击背心",
+        };
+
+        var req = AutomationCoordinator.TryCreateAutoSellRequest(plan, "泰坦防弹装甲", "泰坦防弹装甲", out string reason);
+
+        Assert.Null(req);
+        Assert.Contains("不一致", reason);
+        Assert.Contains("保护留仓", reason);
+    }
+
+    [Theory]
+    [InlineData("5.45×39mm BT", "5.45×39mm BS")]
+    [InlineData("5.45×39mm BS", "5.45×39mm BS ST+")]
+    [InlineData("精密护甲维修包", "高级护甲维修组合")]
+    [InlineData("XCOG突击3.5倍瞄准镜", "视点3倍瞄准镜")]
+    [InlineData("4.6×30mm AP SX", "")]
+    public void TryCreateAutoSellRequest_rejects_sibling_models_and_unrecognized_items(string preset, string collected)
+    {
+        var plan = new FacilityPlan
+        {
+            Key = FacilityKey.Workbench,
+            Enabled = true,
+            AutoSell = true,
+            ItemName = preset,
+            MatchName = preset,
+        };
+
+        var req = AutomationCoordinator.TryCreateAutoSellRequest(plan, collected, collected, out string reason);
+
+        Assert.Null(req);
+        Assert.False(string.IsNullOrWhiteSpace(reason));
+    }
+
+    [Fact]
+    public void TryCreateAutoSellRequest_allows_exact_preset_match_and_carries_preset_guard_into_L2()
+    {
+        var plan = new FacilityPlan
+        {
+            Key = FacilityKey.Workbench,
+            Enabled = true,
+            AutoSell = true,
+            ItemName = "4.6x30mm AP SX",
+            MatchName = "4.6×30mm AP SX",
+        };
+
+        var req = AutomationCoordinator.TryCreateAutoSellRequest(plan, "4.6×30mm AP SX", "4.6x30mm AP SX", out string reason);
+
+        Assert.NotNull(req);
+        Assert.Equal("", reason);
+        Assert.Equal("4.6x30mm AP SX", req.ExpectedPresetName);
+        Assert.Equal("4.6×30mm AP SX", req.ExpectedPresetMatchName);
+        Assert.True(MarketSellFlow.IsRequestAllowedByPreset(req, out _));
+    }
+
+    [Fact]
+    public void TryCreateAutoSellRequest_blocks_when_facility_autoSell_is_disabled_or_preset_empty()
+    {
+        var selfKeep = new FacilityPlan { Key = FacilityKey.PharmacyLab, AutoSell = false, ItemName = "战地医疗箱" };
+        Assert.Null(AutomationCoordinator.TryCreateAutoSellRequest(selfKeep, "战地医疗箱", "战地医疗箱", out string r1));
+        Assert.Equal("", r1);
+
+        var emptyPreset = new FacilityPlan { Key = FacilityKey.PharmacyLab, AutoSell = true, ItemName = "" };
+        Assert.Null(AutomationCoordinator.TryCreateAutoSellRequest(emptyPreset, "战地医疗箱", "战地医疗箱", out string r2));
+        Assert.Contains("未配置制造预设", r2);
+    }
+
+    [Fact]
+    public void MarketSellFlow_IsRequestAllowedByPreset_rejects_mismatched_item_as_L2_defense_in_depth()
+    {
+        var mismatched = new MarketSellRequest(
+            FacilityKey.TechCenter,
+            DisplayName: "AWM狙击步枪",
+            MatchName: "AWM狙击步枪",
+            ExpectedPresetName: "XCOG突击3.5倍瞄准镜",
+            ExpectedPresetMatchName: "XCOG突击3.5倍瞄准镜");
+
+        Assert.False(MarketSellFlow.IsRequestAllowedByPreset(mismatched, out string reason));
+        Assert.Contains("不一致", reason);
+    }
+
     private static AutomationCoordinator CreateMinimalCoordinator(AppSettings settings)
     {
         string tempDir = Path.Combine(Path.GetTempPath(), "dc-market-test-" + Guid.NewGuid().ToString("N"));

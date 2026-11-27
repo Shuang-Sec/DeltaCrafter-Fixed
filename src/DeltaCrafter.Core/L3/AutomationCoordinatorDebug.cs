@@ -66,7 +66,7 @@ public sealed partial class AutomationCoordinator
                 var plan = _plan().CreateExecutionSnapshot();
                 var targets = plan.Facilities
                     .Where(f => f.Enabled && f.AutoSell && !string.IsNullOrWhiteSpace(f.ItemName))
-                    .Select(f => new L2.MarketSellRequest(f.Key, f.ItemName, f.SearchName))
+                    .Select(f => new L2.MarketSellRequest(f.Key, f.ItemName, f.SearchName, f.ItemName, f.SearchName))
                     .ToList();
                 if (targets.Count == 0)
                 {
