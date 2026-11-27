@@ -109,6 +109,13 @@ public sealed class MarketSellFlow
 
         var initialFrame = _probe.Capture(hwnd);
         var initialSlots = await _probe.ReadMarketSlotUsageFromFrameAsync(initialFrame, ct);
+        if (initialSlots is null)
+        {
+            // 刚切到「出售」页时左侧上架列表数字可能延迟半秒渲染，停顿复读一次。
+            await Task.Delay(500, ct);
+            initialFrame = _probe.Capture(hwnd);
+            initialSlots = await _probe.ReadMarketSlotUsageFromFrameAsync(initialFrame, ct);
+        }
         if (initialSlots is { } slots)
         {
             _log.Information("交易行当前上架栏位:{Used}/{Max}。", slots.Used, slots.Max);
@@ -269,16 +276,25 @@ public sealed class MarketSellFlow
             }
 
             string previousSig = "";
+            CapturedFrame? previousFrame = null;
             for (int page = 0; page < MaxScrollPagesPerContainer; page++)
             {
                 ct.ThrowIfCancellationRequested();
                 var scanFrame = _probe.Capture(hwnd);
-                var (candidates, pageSig) = await _probe.ScanMarketGridCandidatesFromFrameAsync(
+                if (previousFrame is not null && ScreenProbe.IsGridRegionUnchanged(previousFrame, scanFrame, gridArea))
+                {
+                    _log.Debug("容器#{Box} 滚动后网格画面未变化，已到达底部。", tab.Index);
+                    break;
+                }
+                var (candidates, pageSig, clusterCount, sampleLabels) = await _probe.ScanMarketGridCandidatesFromFrameAsync(
                     scanFrame, req.DisplayName, req.MatchName, ct);
+                _log.Debug("容器#{Box} 第{Page}页扫描({Item}): 词簇={Clusters}, 候选={Hits}, 样例=[{Samples}]",
+                    tab.Index, page + 1, req.DisplayName, clusterCount, candidates.Count, sampleLabels);
 
                 if (page > 0 && pageSig.Length > 0 && pageSig == previousSig)
                     break; // 已触底或本容器不可滚动
                 previousSig = pageSig;
+                previousFrame = scanFrame;
 
                 int triedOnPage = 0;
                 foreach (var candidate in candidates)
@@ -366,6 +382,11 @@ public sealed class MarketSellFlow
     {
         var snapshot = await _probe.ReadListingModalFromFrameAsync(openedFrame, ct);
         bool titleMatched = await IsModalTitleAllowedForRequestAsync(openedFrame, req, ct);
+        _log.Debug("已打开「△ 上架物品」核验: 标题=「{Title}」, 匹配={Match}, 安全={Safe}, 数量={Qty}/{Total}, 售位={WillUse}/{Avail}, 价格={Price}, 收入={Income}, 按钮=「{Btn}」, 拒绝={Reject}",
+            ScreenProbe.Normalize(snapshot.ItemTitle), titleMatched, snapshot.IsSafe,
+            snapshot.SellQuantity, snapshot.TotalQuantity, snapshot.SlotsWillUse, snapshot.SlotsAvailable,
+            ScreenProbe.Normalize(snapshot.PriceText), snapshot.ExpectedIncome,
+            ScreenProbe.Normalize(snapshot.ActionButtonText), snapshot.RejectReason);
 
         if (!titleMatched)
         {

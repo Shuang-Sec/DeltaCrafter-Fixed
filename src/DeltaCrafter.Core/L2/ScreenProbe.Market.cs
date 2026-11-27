@@ -224,14 +224,55 @@ public sealed partial class ScreenProbe
     internal async Task<(int Used, int Max)?> ReadMarketSlotUsageFromFrameAsync(CapturedFrame frame, CancellationToken ct)
     {
         var roi = Screen(AnchorKeys.MarketSell).Roi(AnchorKeys.RoiMarketSlotCount);
-        foreach (double scale in new[] { 2.0, 1.5, 3.0 })
+        string lastRaw = "";
+        // 2560×1440 下「上架数量 7/15」字号较大，1.0x 原图优先；同时兼容小屏 1.5x/2.0x/3.0x。
+        foreach (double scale in new[] { 1.0, 1.5, 2.0, 3.0 })
         {
             ct.ThrowIfCancellationRequested();
             string text = (await _ocr.ReadAsync(frame, roi, scale)).FullText;
+            if (Normalize(text).Length > 0) lastRaw = text;
             if (TryParseMarketSlotUsage(text, out int used, out int max))
+            {
+                _log.Debug("交易行上架栏位解析({Scale:0.#}x):{Used}/{Max} (原文:{Raw})", scale, used, max, Compact(text));
                 return (used, max);
+            }
         }
+        // 大字白字在复杂背景上做一次局部对比度增强回退。
+        var enhanced = CropAndEnhanceContrast(frame, roi, 145);
+        string enhText = (await _ocr.ReadAsync(enhanced, roi: null, 1.5)).FullText;
+        if (TryParseMarketSlotUsage(enhText, out int eUsed, out int eMax))
+        {
+            _log.Debug("交易行上架栏位解析(对比度增强):{Used}/{Max} (原文:{Raw})", eUsed, eMax, Compact(enhText));
+            return (eUsed, eMax);
+        }
+        _log.Debug("交易行上架栏位未解析出合法分数(原文:{Raw}, 增强:{Enh})。", Compact(lastRaw), Compact(enhText));
         return null;
+    }
+
+    /// <summary>检测两个帧在网格区域内的像素是否几乎无变化，用于判断滚动已触底或当前箱子无需滚动。</summary>
+    internal static bool IsGridRegionUnchanged(CapturedFrame previous, CapturedFrame current, NRect gridRoi)
+    {
+        if (previous.Width != current.Width || previous.Height != current.Height || previous.Width <= 0)
+            return false;
+        var (left, top, width, height) = PixelMapper.ToPixelRect(gridRoi, current.Width, current.Height);
+        if (width < 8 || height < 8) return false;
+        int stepX = Math.Max(4, width / 40);
+        int stepY = Math.Max(4, height / 40);
+        int changed = 0, total = 0;
+        for (int y = top; y < top + height; y += stepY)
+        {
+            int row = y * current.Width * 4;
+            for (int x = left; x < left + width; x += stepX)
+            {
+                int o = row + x * 4;
+                int diff = Math.Abs(previous.Bgra[o] - current.Bgra[o])
+                         + Math.Abs(previous.Bgra[o + 1] - current.Bgra[o + 1])
+                         + Math.Abs(previous.Bgra[o + 2] - current.Bgra[o + 2]);
+                if (diff >= 24) changed++;
+                total++;
+            }
+        }
+        return total > 0 && (double)changed / total < 0.015;
     }
 
     /// <summary>解析「出售数量: 60/90」与「使用售位: 1/8」。</summary>
@@ -540,10 +581,10 @@ public sealed partial class ScreenProbe
     }
 
     /// <summary>
-    /// 在「请选择要上架的道具」右侧网格做 3 条重叠水平带 2x OCR 扫描，
-    /// 输出按「非绑定优先 → 匹配分高 → 亮格高亮优先」排序的候选格子列表及去重页签名。
+    /// 在「请选择要上架的道具」右侧网格做 3 条重叠水平带 2x OCR 扫描（带内无目标命中时同帧 1.5x 补扫），
+    /// 输出按「非绑定优先 → 亮格高亮优先 → 匹配分高」排序的候选格子列表、去重页签名与词簇调试样本。
     /// </summary>
-    internal async Task<(IReadOnlyList<MarketGridCandidate> Candidates, string PageSignature)>
+    internal async Task<(IReadOnlyList<MarketGridCandidate> Candidates, string PageSignature, int ClusterCount, string SampleLabels)>
         ScanMarketGridCandidatesFromFrameAsync(CapturedFrame frame, string displayName, string matchName, CancellationToken ct)
     {
         var grid = Screen(AnchorKeys.MarketSell).Roi(AnchorKeys.RoiMarketGridArea);
@@ -559,19 +600,23 @@ public sealed partial class ScreenProbe
         int cellH = Math.Max(20, (int)Math.Round(frame.Height * ItemBindingBadgeDetector.GridCellHeightNorm));
         var rawCandidates = new List<MarketGridCandidate>();
         var sigBuilder = new StringBuilder();
+        var sampleLabels = new List<string>(8);
+        int clusterCount = 0;
 
-        foreach (var band in bands)
+        void CollectFromDetailed(OcrDetailedReadout detailed, bool recordStats)
         {
-            ct.ThrowIfCancellationRequested();
-            var detailed = await _ocr.ReadDetailedAsync(frame, band, 2.0);
-            if (detailed.Readout.Lines.Count == 0)
-                detailed = await _ocr.ReadDetailedAsync(frame, band, 1.5);
-            sigBuilder.Append(Normalize(detailed.Readout.FullText));
-
+            if (recordStats) sigBuilder.Append(Normalize(detailed.Readout.FullText));
             foreach (var words in detailed.LineWords)
             {
                 foreach (var cluster in SplitLineWordsIntoTileClusters(words, frame.Width))
                 {
+                    if (recordStats)
+                    {
+                        clusterCount++;
+                        string clean = Normalize(cluster.Text);
+                        if (clean.Length >= 2 && sampleLabels.Count < 8 && !sampleLabels.Contains(clean))
+                            sampleLabels.Add(clean);
+                    }
                     int score = ScoreMarketGridCandidate(cluster.Text, displayName, matchName);
                     if (score <= 0) continue;
 
@@ -585,6 +630,20 @@ public sealed partial class ScreenProbe
                     double bright = ItemBindingBadgeDetector.MeasureTileHighlightScore(frame, tileLeft, tileTop, tileW, cellH);
                     rawCandidates.Add(new MarketGridCandidate(cluster.Text, score, clickX, clickY, bright, bound));
                 }
+            }
+        }
+
+        foreach (var band in bands)
+        {
+            ct.ThrowIfCancellationRequested();
+            int beforeBand = rawCandidates.Count;
+            var detailed = await _ocr.ReadDetailedAsync(frame, band, 2.0);
+            CollectFromDetailed(detailed, recordStats: true);
+            if (rawCandidates.Count == beforeBand)
+            {
+                ct.ThrowIfCancellationRequested();
+                var fallback = await _ocr.ReadDetailedAsync(frame, band, 1.5);
+                CollectFromDetailed(fallback, recordStats: detailed.Readout.Lines.Count == 0);
             }
         }
 
@@ -604,6 +663,6 @@ public sealed partial class ScreenProbe
             deduped.Add(c);
         }
 
-        return (deduped, sigBuilder.ToString());
+        return (deduped, sigBuilder.ToString(), clusterCount, string.Join("/", sampleLabels));
     }
 }

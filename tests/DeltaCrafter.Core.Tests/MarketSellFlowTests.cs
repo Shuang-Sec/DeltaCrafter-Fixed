@@ -469,6 +469,22 @@ public class MarketSellFlowTests
         Assert.Contains("不一致", reason);
     }
 
+    [Fact]
+    public void IsGridRegionUnchanged_distinguishes_identical_and_scrolled_grid_frames()
+    {
+        var f1 = CreateSolidFrame(400, 300, 40, 44, 52);
+        var f2 = CreateSolidFrame(400, 300, 40, 44, 52);
+        var grid = new NRect { X = 0.60, Y = 0.15, W = 0.35, H = 0.75 };
+
+        Assert.True(ScreenProbe.IsGridRegionUnchanged(f1, f2, grid));
+
+        for (int y = 60; y < 220; y++)
+            for (int x = 250; x < 360; x++)
+                SetPixel(f2, x, y, 160, 170, 180);
+
+        Assert.False(ScreenProbe.IsGridRegionUnchanged(f1, f2, grid));
+    }
+
     private static AutomationCoordinator CreateMinimalCoordinator(AppSettings settings)
     {
         string tempDir = Path.Combine(Path.GetTempPath(), "dc-market-test-" + Guid.NewGuid().ToString("N"));
