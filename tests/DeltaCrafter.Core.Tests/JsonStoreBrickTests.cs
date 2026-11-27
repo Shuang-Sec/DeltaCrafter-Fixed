@@ -15,13 +15,21 @@ public class JsonStoreBrickTests : IDisposable
     public void Roundtrips_settings_with_enum_as_string()
     {
         string path = Path.Combine(_dir, "settings.json");
-        var original = new AppSettings { GamePath = @"D:\Game\delta.exe", AfterRun = AfterRunAction.KeepRunning };
+        var original = new AppSettings
+        {
+            GamePath = @"D:\Game\delta.exe",
+            AfterRun = AfterRunAction.KeepRunning,
+            AutoSellCraftedItems = true,
+            AutoSellPriceAdjustSteps = 2,
+        };
         _store.Save(path, original);
 
         Assert.Contains("KeepRunning", File.ReadAllText(path)); // 枚举必须存字符串,手改不出魔法数字
         var loaded = _store.Load<AppSettings>(path);
         Assert.Equal(original.GamePath, loaded.GamePath);
         Assert.Equal(AfterRunAction.KeepRunning, loaded.AfterRun);
+        Assert.True(loaded.AutoSellCraftedItems);
+        Assert.Equal(2, loaded.AutoSellPriceAdjustSteps);
     }
 
     [Fact]
@@ -89,6 +97,28 @@ public class JsonStoreBrickTests : IDisposable
         // 中止确认弹窗:已按实机截图标定,confirm 点应为非 0(0,0 表示未校准会被程序拒点)。
         var confirm = table.Screen(AnchorKeys.AbortConfirm).Point(AnchorKeys.PointConfirm);
         Assert.True(confirm.X > 0 && confirm.Y > 0);
+
+        // 交易行→出售页与△上架物品弹窗:已按 16:9 实机截图标定。
+        Assert.NotNull(table.Screen(AnchorKeys.Lobby).Point(AnchorKeys.PointMarketEntry));
+        Assert.NotNull(specOps.Point(AnchorKeys.PointMarketEntry));
+
+        var marketSell = table.Screen(AnchorKeys.MarketSell);
+        Assert.False(string.IsNullOrWhiteSpace(marketSell.Probe.MustContain));
+        Assert.NotNull(marketSell.Point(AnchorKeys.PointSellTab));
+        Assert.NotNull(marketSell.Roi(AnchorKeys.RoiMarketSlotCount));
+        Assert.NotNull(marketSell.Roi(AnchorKeys.RoiMarketBoxStrip));
+        Assert.NotNull(marketSell.Roi(AnchorKeys.RoiMarketGridArea));
+
+        var marketListing = table.Screen(AnchorKeys.MarketListing);
+        Assert.Equal("上架物品", marketListing.Probe.MustContain);
+        Assert.True(marketListing.Point(AnchorKeys.PointPriceMinus).X > 0);
+        Assert.True(marketListing.Point(AnchorKeys.PointPricePlus).X > 0);
+        Assert.True(marketListing.Point(AnchorKeys.PointConfirmList).X > 0);
+        Assert.NotNull(marketListing.Roi(AnchorKeys.RoiDetailTitle));
+        Assert.NotNull(marketListing.Roi(AnchorKeys.RoiListingMeta));
+        Assert.NotNull(marketListing.Roi(AnchorKeys.RoiListingPrice));
+        Assert.NotNull(marketListing.Roi(AnchorKeys.RoiListingIncome));
+        Assert.NotNull(marketListing.Roi(AnchorKeys.RoiActionButton));
     }
 
     public void Dispose()

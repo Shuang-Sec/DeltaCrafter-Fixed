@@ -88,21 +88,34 @@ public static class AnchorKeys
     public const string AbortConfirm = "abort-confirm";
     public const string WarehouseFull = "warehouse-full";
     public const string NetworkReconnect = "network-reconnect";
+    public const string MarketSell = "market-sell";
+    public const string MarketListing = "market-listing";
 
     public const string PointModeEntry = "mode-entry";
     public const string PointSpecOpsEntry = "specops-entry";
+    public const string PointMarketEntry = "market-entry";
+    public const string PointSellTab = "sell-tab";
     public const string PointBackToLobby = "back-to-lobby";
     public const string PointDismiss = "dismiss";
     public const string PointActionButton = "action-button";
     public const string PointBuy = "buy";
     public const string PointConfirm = "confirm";
     public const string PointNetworkReconnect = "confirm-reconnect";
+    public const string PointPriceMinus = "price-minus";
+    public const string PointPricePlus = "price-plus";
+    public const string PointConfirmList = "confirm-list";
     public static string FacilitySlot(FacilityKey key) => "slot-" + FacilityKeys.JsonKey(key);
 
     public const string RoiListArea = "list-area";
     public const string RoiDetailTitle = "detail-title";
     public const string RoiActionButton = "action-button";
     public const string RoiRemainingTime = "remaining-time";
+    public const string RoiMarketSlotCount = "slot-count";
+    public const string RoiMarketGridArea = "grid-area";
+    public const string RoiMarketBoxStrip = "box-strip";
+    public const string RoiListingMeta = "listing-meta";
+    public const string RoiListingPrice = "price-value";
+    public const string RoiListingIncome = "expected-income";
 }
 
 /// <summary>归一化几何到物理像素的纯换算,便于单元测试。</summary>

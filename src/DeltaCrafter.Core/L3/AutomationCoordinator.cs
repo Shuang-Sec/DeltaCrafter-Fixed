@@ -20,6 +20,7 @@ public sealed partial class AutomationCoordinator : IDisposable
     private readonly CraftStartFlow _craft;
     private readonly AbortFlow _abort;
     private readonly CatalogScanFlow _scan;
+    private readonly MarketSellFlow? _marketSell;
     private readonly ICatalogSink _catalogSink;
     private readonly ICatalogLookup _catalog;
     private readonly IAppWindowGuard _windowGuard;
@@ -50,10 +51,10 @@ public sealed partial class AutomationCoordinator : IDisposable
         ScheduleEngine engine,
         ScreenProbe probe, GameWindowBrick windowBrick, SleepGuardBrick sleepGuard,
         Func<AppSettings> settings, Func<CraftPlanConfig> plan, INotifier notifier,
-        IClock clock, ILogger log)
+        IClock clock, ILogger log, MarketSellFlow? marketSell = null)
         : this(launch, nav, collect, craft, abort, scan, catalogSink, catalogLookup,
             windowGuard, shutdown, engine, probe, windowBrick, sleepGuard,
-            settings, plan, notifier, clock, log, active => sleepGuard.SetActive(active))
+            settings, plan, notifier, clock, log, active => sleepGuard.SetActive(active), marketSell)
     {
     }
 
@@ -63,10 +64,10 @@ public sealed partial class AutomationCoordinator : IDisposable
         ICatalogLookup catalogLookup, IAppWindowGuard windowGuard, ShutdownFlow shutdown,
         ScheduleEngine engine, ScreenProbe probe, GameWindowBrick windowBrick, SleepGuardBrick sleepGuard,
         Func<AppSettings> settings, Func<CraftPlanConfig> plan, INotifier notifier,
-        IClock clock, ILogger log, Action<bool> setSleepActive)
+        IClock clock, ILogger log, Action<bool> setSleepActive, MarketSellFlow? marketSell = null)
     {
         _launch = launch; _nav = nav; _collect = collect; _craft = craft; _abort = abort;
-        _scan = scan; _catalogSink = catalogSink; _catalog = catalogLookup;
+        _scan = scan; _marketSell = marketSell; _catalogSink = catalogSink; _catalog = catalogLookup;
         _windowGuard = windowGuard;
         _shutdown = shutdown;
         _engine = engine; _probe = probe; _windowBrick = windowBrick; _setSleepActive = setSleepActive;
@@ -344,8 +345,10 @@ public sealed partial class AutomationCoordinator : IDisposable
         await _nav.EnterSpecOpsAsync(launch.Hwnd, ct);
 
         var plan = _plan().CreateExecutionSnapshot();
-        bool autoReplenishMaterials = _settings().AutoReplenishMaterials;
+        var currentSettings = _settings();
+        bool autoReplenishMaterials = currentSettings.AutoReplenishMaterials;
         var blocked = new HashSet<FacilityKey>();
+        var collectedForSale = new List<MarketSellRequest>();
 
         Publish(new CoordinatorStatus(EngineMode.Running, "观察设施状态…", null));
         var batch = await _collect.ObserveAllDetailedAsync(launch.Hwnd, ct);
@@ -376,7 +379,10 @@ public sealed partial class AutomationCoordinator : IDisposable
                     await CompleteCollectionAsync(fp.Key,
                         () => _collect.CollectAsync(launch.Hwnd, fp.Key, ct), async () =>
                         {
-                            report.Add($"{name}已领取「{DisplayItem(fp.Key, obs.ItemName)}」");
+                            string collectedDisplay = DisplayItem(fp.Key, obs.ItemName);
+                            report.Add($"{name}已领取「{collectedDisplay}」");
+                            if (fp.AutoSell && collectedDisplay.Length > 0)
+                                collectedForSale.Add(new MarketSellRequest(fp.Key, collectedDisplay, obs.ItemName));
                             await StartCraftForAsync(launch.Hwnd, fp, autoReplenishMaterials, report, blocked, ct);
                         }, ct);
                     break;
@@ -396,6 +402,15 @@ public sealed partial class AutomationCoordinator : IDisposable
                      f.Enabled && !blocked.Contains(f.Key) && final.Agreed.ContainsKey(f.Key)))
         {
             RecordFinalObservation(fp, final.Agreed[fp.Key]);
+        }
+
+        // 全部工位领取、续造并落盘完成后，再统一前往交易行「出售」页批量上架本轮刚领取的非绑定产物；
+        // 上架受阻/跳过不会影响已落盘的制造倒计时与调度。
+        if (_marketSell is not null && collectedForSale.Count > 0)
+        {
+            await RunAutoSellStageAsync(
+                (items, steps, token) => _marketSell.SellBatchAsync(launch.Hwnd, items, steps, dryRun: false, token),
+                collectedForSale, report, ct);
         }
 
         await ApplyAfterRunAsync(launch.Hwnd, ct);
@@ -429,6 +444,53 @@ public sealed partial class AutomationCoordinator : IDisposable
         _log.Information("{Facility}领取检查点已保存:当前空闲，等待下一次开工。", FacilityKeys.DisplayName(key));
         ct.ThrowIfCancellationRequested();
         await continueCraft();
+    }
+
+    /// <summary>
+    /// 交易行自动上架阶段隔离边界：
+    /// 总开关关闭时零调用；任何非取消异常仅记录日志并写入摘要，绝不拖垮已落盘的制造续造调度。
+    /// </summary>
+    internal async Task RunAutoSellStageAsync(
+        Func<IReadOnlyList<MarketSellRequest>, int, CancellationToken, Task<MarketSellBatchResult>> sellBatch,
+        IReadOnlyList<MarketSellRequest> items,
+        RunReport report,
+        CancellationToken ct)
+    {
+        var s = _settings();
+        if (!s.AutoSellCraftedItems || items.Count == 0)
+            return;
+
+        ct.ThrowIfCancellationRequested();
+        int adjustSteps = Math.Clamp(s.AutoSellPriceAdjustSteps, 0, 3);
+        Publish(new CoordinatorStatus(EngineMode.Running, $"自动上架交易行({items.Count} 件)…", null));
+        try
+        {
+            var result = await sellBatch(items, adjustSteps, ct);
+            AppendMarketSellOutcomes(result, report);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "交易行自动上架阶段异常，已保留本轮制造结果。");
+            report.Add($"交易行自动上架未完成({ex.Message})，不影响本轮制造调度");
+        }
+    }
+
+    internal static void AppendMarketSellOutcomes(MarketSellBatchResult result, RunReport report)
+    {
+        foreach (var o in result.Outcomes)
+        {
+            string line = o.Status switch
+            {
+                MarketSellStatus.Listed => $"交易行已上架「{o.Request.DisplayName}」({o.Detail})",
+                MarketSellStatus.DryRunVerified => $"交易行只读核验「{o.Request.DisplayName}」({o.Detail})",
+                _ => $"交易行跳过「{o.Request.DisplayName}」({o.Detail})",
+            };
+            report.Add(line);
+        }
     }
 
     private async Task StartCraftForAsync(nint hwnd, FacilityPlan fp, bool autoReplenishMaterials,

@@ -71,6 +71,18 @@ public sealed class AppSettings
     /// </summary>
     public bool AutoReplenishMaterials { get; set; } = true;
 
+    /// <summary>
+    /// 领取产物后自动前往交易行「出售」页上架刚领取的非绑定产物(默认关闭,绝不未经确认私自上架)。
+    /// 仅当本总开关开启且对应设施计划中的「自动上架」也勾选时才执行;绝不卖给军需处。
+    /// </summary>
+    public bool AutoSellCraftedItems { get; set; }
+
+    /// <summary>
+    /// 自动上架时的降价档位(0..3):从系统默认填入的「在售最低价」开始点击价格「-」按钮的次数。
+    /// 0 表示直接按系统推荐最低价挂出。
+    /// </summary>
+    public int AutoSellPriceAdjustSteps { get; set; }
+
     /// <summary>断线确认连续失败且确认不在对局时，是否允许自动关闭并重新拉起一次游戏。</summary>
     public bool AutoRestartOnNetworkReconnect { get; set; } = true;
 

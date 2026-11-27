@@ -38,6 +38,13 @@ public sealed class PlanFacilityModel : ObservableObject
         set { if (_plan.Enabled == value) return; _plan.Enabled = value; OnPropertyChanged(); _save(); }
     }
 
+    /// <summary>总开关开启时，本设施刚领取的非绑定产物是否自动前往交易行上架。</summary>
+    public bool AutoSell
+    {
+        get => _plan.AutoSell;
+        set { if (_plan.AutoSell == value) return; _plan.AutoSell = value; OnPropertyChanged(); _save(); }
+    }
+
     public string ItemName
     {
         get => _plan.ItemName;
@@ -204,6 +211,37 @@ public sealed partial class PlanViewModel : ObservableObject
             _host.SaveSettings();
             OnPropertyChanged();
             _host.Log.Information(value ? "已开启自动一键补齐材料。" : "已关闭自动补齐,缺料将标记需人工。");
+        }
+    }
+
+    public bool AutoSellCraftedItems
+    {
+        get => _host.Settings.AutoSellCraftedItems;
+        set
+        {
+            if (_host.Settings.AutoSellCraftedItems == value) return;
+            _host.Settings.AutoSellCraftedItems = value;
+            _host.SaveSettings();
+            OnPropertyChanged();
+            _host.Log.Information(value
+                ? "已开启领取后自动上架交易行(仅上架刚领取且勾选自动上架设施的非绑定产物,降价 {Steps} 档)。"
+                : "已关闭领取后自动上架交易行。",
+                _host.Settings.AutoSellPriceAdjustSteps);
+        }
+    }
+
+    public double AutoSellPriceAdjustSteps
+    {
+        get => _host.Settings.AutoSellPriceAdjustSteps;
+        set
+        {
+            if (double.IsNaN(value)) return;
+            int clamped = Math.Clamp((int)Math.Round(value), 0, 3);
+            if (clamped == _host.Settings.AutoSellPriceAdjustSteps) return;
+            _host.Settings.AutoSellPriceAdjustSteps = clamped;
+            _host.SaveSettings();
+            OnPropertyChanged();
+            _host.Log.Information("自动上架交易行降价档位已设置为 {Steps} 档。", clamped);
         }
     }
 }

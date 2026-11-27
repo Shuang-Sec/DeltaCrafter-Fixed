@@ -59,6 +59,7 @@
                                         <MenuFlyoutItem Text="截图并识别当前画面" Command="{x:Bind Vm.DebugDumpCommand}" />
                                         <MenuFlyoutSeparator />
                                         <MenuFlyoutItem Text="扫描配方目录(补全物品候选)" Command="{x:Bind Vm.DebugScanCatalogCommand}" />
+                                        <MenuFlyoutItem Text="检查交易行可上架物品(只看不卖)" Command="{x:Bind Vm.DebugMarketSellDryRunCommand}" />
                                     </MenuFlyout>
                                 </Button.Flyout>
                             </Button>

@@ -129,6 +129,9 @@ public sealed partial class OverviewViewModel : ObservableObject
     [RelayCommand]
     private Task DebugScanCatalogAsync() => Task.Run(() => _coordinator.DebugScanCatalogAsync());
 
+    [RelayCommand]
+    private Task DebugMarketSellDryRunAsync() => Task.Run(() => _coordinator.DebugInspectMarketSellAsync());
+
     /// <summary>「单步调试」仅开发者模式显示(设置页最底部开关)。</summary>
     public Visibility DebugVisibility =>
         _host.Settings.DeveloperMode ? Visibility.Visible : Visibility.Collapsed;

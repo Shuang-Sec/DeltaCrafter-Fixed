@@ -55,6 +55,8 @@ public sealed class FacilityPlan
 {
     public FacilityKey Key { get; set; }
     public bool Enabled { get; set; }
+    /// <summary>全局开启「领取后自动上架交易行」时,是否上架本设施刚领取的非绑定产物。默认开启。</summary>
+    public bool AutoSell { get; set; } = true;
     public CraftMode Mode { get; set; }
     public string ItemName { get; set; } = "";
     public string MatchName { get; set; } = "";
@@ -125,6 +127,7 @@ public sealed class CraftPlanConfig
         {
             Key = f.Key,
             Enabled = f.Enabled,
+            AutoSell = f.AutoSell,
             Mode = f.Mode,
             ItemName = f.ItemName,
             MatchName = f.MatchName,

@@ -52,6 +52,35 @@ public sealed partial class AutomationCoordinator
                 r.Add("目录已合并保存,制造计划页下拉即刻可用(游戏保持打开)");
             });
 
+    /// <summary>
+    /// 只读验收交易行自动上架：进入「交易行 → 出售」，按当前计划中已配置物品逐一搜索主仓库与扩容箱，
+    /// 跳过绑定/压暗格子，打开「△ 上架物品」核对完整名称、默认数量、售位与预期收入后立即 ESC 关闭，
+    /// 绝不点击降价或上架按钮，供首次实机安全验收坐标与识别率。
+    /// </summary>
+    public Task<RunReport> DebugInspectMarketSellAsync() =>
+        ExecuteGuardedAsync("单步:交易行上架只读核验", affectsSchedule: false, requiresCalibration: true,
+            async (r, ct) =>
+            {
+                if (_marketSell is null)
+                    throw new StepFailedException("交易行只读核验", "当前未装配交易行上架流程模块。");
+                var plan = _plan().CreateExecutionSnapshot();
+                var targets = plan.Facilities
+                    .Where(f => f.Enabled && f.AutoSell && !string.IsNullOrWhiteSpace(f.ItemName))
+                    .Select(f => new L2.MarketSellRequest(f.Key, f.ItemName, f.SearchName))
+                    .ToList();
+                if (targets.Count == 0)
+                {
+                    r.Add("制造计划中暂无同时启用且勾选「自动上架」的物品，无可核验目标。");
+                    return;
+                }
+                var launch = await _launch.EnsureLobbyAsync(ct);
+                var result = await _marketSell.SellBatchAsync(launch.Hwnd, targets, priceAdjustSteps: 0, dryRun: true, ct);
+                if (result.InitialSlotUsage is { } slots)
+                    r.Add($"交易行当前上架栏位 {slots.Used}/{slots.Max}");
+                AppendMarketSellOutcomes(result, r);
+                r.Add("只读验收完成，未点击任何上架按钮(游戏保持打开)");
+            });
+
     /// <summary>画面诊断:保存整帧截图+全文 OCR。不要求已校准——它正是校准的工具。</summary>
     public Task<RunReport> DebugDumpAsync() =>
         ExecuteGuardedAsync("单步:画面诊断", affectsSchedule: false, requiresCalibration: false,

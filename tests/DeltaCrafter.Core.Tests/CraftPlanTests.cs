@@ -12,6 +12,7 @@ public class CraftPlanTests
         var plan = CraftPlanConfig.CreateDefault();
         var tech = plan.For(FacilityKey.TechCenter);
         tech.Enabled = true;
+        tech.AutoSell = false;
         tech.Mode = CraftMode.HourlyProfit;
         tech.ItemName = "旧推荐";
         tech.MatchName = "旧 OCR";
@@ -21,6 +22,7 @@ public class CraftPlanTests
         var snapshot = plan.CreateExecutionSnapshot();
 
         tech.Enabled = false;
+        tech.AutoSell = true;
         tech.Mode = CraftMode.TotalProfit;
         tech.ItemName = "新推荐";
         tech.MatchName = "新 OCR";
@@ -30,6 +32,7 @@ public class CraftPlanTests
 
         var captured = snapshot.For(FacilityKey.TechCenter);
         Assert.True(captured.Enabled);
+        Assert.False(captured.AutoSell);
         Assert.Equal(CraftMode.HourlyProfit, captured.Mode);
         Assert.Equal("旧推荐", captured.ItemName);
         Assert.Equal("旧 OCR", captured.MatchName);
@@ -156,6 +159,33 @@ public class CraftPlanTests
             store.Save(path, settings);
 
             Assert.DoesNotContain("craftMode", File.ReadAllText(path));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Legacy_plan_json_without_autoSell_defaults_facility_autoSell_to_true()
+    {
+        string directory = Path.Combine(
+            Path.GetTempPath(), $"DeltaCrafter-tests-{Guid.NewGuid():N}");
+        string path = Path.Combine(directory, "plan.json");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllText(path, """
+                {
+                  "schemaVersion": 3,
+                  "facilities": [
+                    { "key": "Workbench", "enabled": true, "mode": "Custom", "itemName": "5.7×28mm SS190" }
+                  ]
+                }
+                """);
+            var store = new JsonStoreBrick();
+            var loaded = store.Load<CraftPlanConfig>(path);
+            Assert.True(loaded.For(FacilityKey.Workbench).AutoSell);
         }
         finally
         {

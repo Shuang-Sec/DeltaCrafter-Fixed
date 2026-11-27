@@ -98,12 +98,13 @@ public sealed class AppHost : ICatalogSink, ICatalogLookup, IAppWindowGuard
         var craft = new CraftStartFlow(probe, runner, input, Log);
         var abort = new AbortFlow(probe, runner, input, Log);
         var scan = new CatalogScanFlow(probe, runner, input, Log);
+        var marketSell = new MarketSellFlow(probe, input, Log);
         var shutdown = new ShutdownFlow(process, WindowBrick, probe, runner, Log);
         var engine = new ScheduleEngine(Store, Paths.StatePath, clock, Log);
 
         Coordinator = new AutomationCoordinator(launch, nav, collect, craft, abort, scan, this,
             this, this, shutdown, engine, probe, WindowBrick, SleepGuard, () => Settings, () => Plan,
-            Notifier, clock, Log);
+            Notifier, clock, Log, marketSell);
 
         Updater = new UpdateService(this, new UpdateCoordinator(), Log);
 
@@ -283,7 +284,8 @@ public sealed class AppHost : ICatalogSink, ICatalogLookup, IAppWindowGuard
         Log.Information("制造计划已保存:{Summary}", string.Join("; ",
             Plan.Facilities.Select(f =>
                 $"{FacilityKeys.DisplayName(f.Key)}[{DescribeCraftMode(f.Mode)}/"
-                + $"{(f.Enabled ? "启用" : "停用")}]"
+                + $"{(f.Enabled ? "启用" : "停用")}/"
+                + $"{(f.AutoSell ? "可上架" : "自留")}]"
                 + $"{(f.ItemName.Length > 0 ? " " + f.ItemName : " 未选物品")}")));
     }
 

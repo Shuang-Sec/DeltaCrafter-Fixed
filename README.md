@@ -2,7 +2,7 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11%20x64-0078D6?logo=windows)](#环境要求与运行方式)
 [![Framework](https://img.shields.io/badge/.NET-8.0%20%7C%20WinUI%203-512BD4?logo=dotnet)](#源码构建与测试)
-[![Tests](https://img.shields.io/badge/Unit%20Tests-812%20Passed-2EA043)](#源码构建与测试)
+[![Tests](https://img.shields.io/badge/Unit%20Tests-858%20Passed-2EA043)](#源码构建与测试)
 [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
 《三角洲行动》特勤处本地自动制造与调度助手的非官方社区修复维护分支，基于上游 [ixekico/DeltaCrafting](https://github.com/ixekico/DeltaCrafting) `v0.4.0`（固定基线提交 `04b19179fb629bf6803dde1b17fd8857ba516d45`）持续演进。
@@ -30,7 +30,7 @@
 | 渠道 | 版本 / 状态 | 说明 |
 | --- | --- | --- |
 | **GitHub Releases** | `v0.4.0-fix.1`（2026-10-24） | 首个预发布运行包，包含手电匹配键、长标题 ROI 扩展、全角点倒计时与数据目录隔离。 |
-| **`main` 分支源码** | 持续更新（最新同步至 2026-11-27） | 在 `v0.4.0-fix.1` 基础上已完成多轮实机故障驱动的深度优化（812 项单元测试通过），尚未重新打包新的 Release ZIP；如需最新能力请按下方[源码构建](#源码构建与测试)本地编译发布。 |
+| **`main` 分支源码** | 持续更新（最新同步至 2026-11-27） | 在 `v0.4.0-fix.1` 基础上已完成多轮实机故障驱动的深度优化并新增「领取后自动上架交易行」功能（858 项单元测试通过），尚未重新打包新的 Release ZIP；如需最新能力请按下方[源码构建](#源码构建与测试)本地编译发布。 |
 
 ---
 
@@ -55,7 +55,13 @@
 - **无打扰策略**：仅在游戏完全退出时预启动，游戏运行中（含最小化到任务栏）不提前拉起窗口；遇未知界面（对局/社交/邮件页）最多按 1 次 ESC，仍未回到已知页面则自动暂停 2 小时。
 - **每 3 小时公共利润行情**：接入只读国服制造利润榜（免 API Key，主备域名故障转移），支持四工位独立选择「自定义物品」「每小时利润最高」「总利润最高」；跨重启持久化行情快照，网络异常时保留最后有效行情与当前计划。
 
-### 4. 性能、存储留存与界面体验
+### 4. 领取后自动上架交易行（默认关闭，安全可控）
+- **双粒度开关与定价档位**：在「制造计划」页提供全局总开关「领取后自动上架交易行」（**默认关闭**）、降价档位 `0–3`（从系统默认填入的「在售最低价」起点击价格 `-` 按钮的次数，默认 `0`），以及四张设施卡各自独立的「领取后自动上架此设施产物」勾选框（方便按需出售子弹/护甲、自留医疗针剂）。
+- **直入交易行出售页，彻底零军需处误卖**：全部工位完成领取、续造并落盘倒计时后，统一从顶栏词级定位进入「交易行 → 出售（请选择要上架的道具）」，直接跳过包含「军需处回收」按钮的仓库弹窗；并在上架弹窗安全闸门硬拒绝任何「军需处 / 回收 / 绑定 / 不可上架」文案。
+- **双保险非绑定校验与全容器搜索**：利用交易行出售页高亮/压暗引擎过滤 + `ItemBindingBadgeDetector` 左下角白色斜线绑定角标像素检测；自动识别主仓库及玩家已装备的任意数量扩容箱，通过 3 带高分辨率逐词簇 OCR 定位候选格子，再于「△ 上架物品」弹窗严格用 `TextMatch.MatchesRecipeName` 核验完整名称、可用售位与预期收入后执行**单次不可重复**上架（仅上架本轮刚领取的 1 份 / 1 组子弹，不连卖自用库存；栏位已满或绑定物品优雅跳过，不影响制造调度）。
+- **只读实机验收入口**：开发者模式下总览页「单步调试」新增「检查交易行可上架物品（只看不卖）」，可先零风险核验识别、跨箱切换与弹窗校验后再开启自动上架。
+
+### 5. 性能、存储留存与界面体验
 - **内存与轮询减负**：新增局部 ROI 裁剪二值化（`CropAndEnhanceContrast`）替代每遍多次 1440p 整帧大对象堆克隆；原始 2x/1x/1.5x 标题全票一致即短路跳过二值化；空闲断线监测改为单帧轻量化探测。
 - **持久化并发安全**：`JsonStoreBrick` 采用固定 16 槽路径哈希分桶锁与唯一随机 `.tmp` 原子替换（失败自动清理）；`ScheduleEngine` 全路径读写加锁，`FacilitySnapshot()` 自动规范化历史遗留脏名显示。
 - **诊断截图留存与界面可观测性**：内置 `ShotRetention` 按诊断组自动保留最近 14 天且不超过 80 组现场截图；设置页新增「诊断截图留存」卡片（异步统计占用体积 + 一键清理过期截图 + 打开目录）；总览页状态卡在上一轮成功时直接展示「上次执行」摘要与悬停全文提示。
@@ -90,10 +96,10 @@
 DeltaCrafter-Fixed/
 ├── src/
 │   ├── DeltaCrafter.Core/         # 自动化核心（net8.0-windows10.0.19041.0）
-│   │   ├── Data/                  # 内置默认模板：anchors.json (rev 10)、items.json (rev 4)
-│   │   ├── L0/                    # 纯数据模型与不变量（TextMatch、CountdownParser、AnchorTable、ItemCatalog 等）
+│   │   ├── Data/                  # 内置默认模板：anchors.json (rev 11)、items.json (rev 4)
+│   │   ├── L0/                    # 纯数据模型与不变量（TextMatch、CountdownParser、AnchorTable、ItemBindingBadgeDetector 等）
 │   │   ├── L1/                    # 单一系统能力（OcrBrick、ScreenCaptureBrick、InputBrick、JsonStoreBrick、ShotRetention 等）
-│   │   ├── L2/                    # 单业务流程（ScreenProbe、CollectFlow、CraftStartFlow、LaunchFlow、ScheduleEngine 等）
+│   │   ├── L2/                    # 单业务流程（ScreenProbe、CollectFlow、CraftStartFlow、MarketSellFlow、LaunchFlow、ScheduleEngine 等）
 │   │   └── L3/                    # 跨流程总编排（AutomationCoordinator、ProfitPlanCoordinator、UpdateCoordinator）
 │   └── DeltaCrafter.App/          # WinUI 3 Fluent 桌面端（unpackaged 自包含 win-x64）
 │       ├── Pages/                 # 总览、制造计划、运行日志、设置页
@@ -101,7 +107,7 @@ DeltaCrafter-Fixed/
 │       ├── Controls/ & Design/    # 卡片控件与 Fluent 设计令牌
 │       └── Services/              # 组合根 AppHost、托盘、主题、通知与行情应用服务
 ├── tests/
-│   └── DeltaCrafter.Core.Tests/   # xUnit 核心回归测试套件（812 项用例 + 脱敏样本 Fixtures）
+│   └── DeltaCrafter.Core.Tests/   # xUnit 核心回归测试套件（858 项用例 + 脱敏样本 Fixtures）
 ├── scripts/
 │   ├── build-release.ps1          # 锁定依赖还原、Release 构建、全量测试、自包含打包与 SHA-256 生成
 │   └── Test-ReleasePrivacy.ps1    # 源码（Source）与发布包（Package）双模式隐私脱敏扫描
@@ -152,7 +158,7 @@ dotnet test tests/DeltaCrafter.Core.Tests/DeltaCrafter.Core.Tests.csproj -c Rele
 pwsh -File scripts/build-release.ps1
 ```
 
-脚本会执行源码隐私检查、锁定版本依赖还原、Release/x64 构建、全部 812 项单元测试、自包含 `win-x64` 发布（确定性编译、路径映射到 `/_/`、无 PDB）、发布包隐私检查，最终输出 ZIP 与 `.sha256` 到 `artifacts/`。
+脚本会执行源码隐私检查、锁定版本依赖还原、Release/x64 构建、全部 858 项单元测试、自包含 `win-x64` 发布（确定性编译、路径映射到 `/_/`、无 PDB）、发布包隐私检查，最终输出 ZIP 与 `.sha256` 到 `artifacts/`。
 
 ### 3. 提交与发布前隐私脱敏扫描
 
