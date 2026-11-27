@@ -15,9 +15,9 @@ internal sealed record MarketBoxTab(int Index, double CenterX, double CenterY, b
 /// </summary>
 internal static class ItemBindingBadgeDetector
 {
-    /// <summary>16:9 画面下「请选择要上架的道具」网格单格归一化宽高（9 列横跨 0.308 宽）。</summary>
+    /// <summary>16:9 画面下「请选择要上架的道具」网格单格归一化宽高（实机 1440p 精确格距 85.6px，9 列横跨 0.308 宽）。</summary>
     internal const double GridCellWidthNorm = 0.0342;
-    internal const double GridCellHeightNorm = 0.0608;
+    internal const double GridCellHeightNorm = 0.0595;
 
     /// <summary>左侧容器切换栏（主仓库 + 扩容箱）实机标定中心 X、首格中心 Y 与垂直步距。</summary>
     internal const double BoxStripCenterXNorm = 0.628;

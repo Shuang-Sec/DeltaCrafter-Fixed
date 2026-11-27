@@ -287,7 +287,7 @@ public sealed class MarketSellFlow
                     break;
                 }
                 var (candidates, pageSig, clusterCount, sampleLabels) = await _probe.ScanMarketGridCandidatesFromFrameAsync(
-                    scanFrame, req.DisplayName, req.MatchName, ct);
+                    scanFrame, req.DisplayName, req.MatchName, ct, scrolled: page > 0);
                 _log.Debug("容器#{Box} 第{Page}页扫描({Item}): 词簇={Clusters}, 候选={Hits}, 样例=[{Samples}]",
                     tab.Index, page + 1, req.DisplayName, clusterCount, candidates.Count, sampleLabels);
 

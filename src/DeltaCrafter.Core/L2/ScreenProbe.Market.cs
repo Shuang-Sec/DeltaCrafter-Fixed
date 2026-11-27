@@ -581,26 +581,80 @@ public sealed partial class ScreenProbe
     }
 
     /// <summary>
-    /// 在「请选择要上架的道具」右侧网格做 3 条重叠水平带 2x OCR 扫描（带内无目标命中时同帧 1.5x 补扫），
+    /// 生成「请选择要上架的道具」网格的窄水平标签条带：
+    /// 实机 1440p 原图测试证实，带入下方 3D 物品图标的宽区域会让 Windows OCR 读空或严重乱码，
+    /// 而只裁取每行顶部约 0.028H（~40px）窄标签条并以 2.5x 识别即可清晰读出同排几乎全部物品名。
+    /// 未滚动首页（scrolled=false）按实机精确格距 0.0595H 切 13 条；滚动后（scrolled=true）用步距 0.019H、
+    /// 高 0.032H 重叠扫描，保证任意滚动偏移下的行首标签都完整落入至少一条无图标干扰的窄带。
+    /// </summary>
+    internal static IReadOnlyList<NRect> BuildMarketGridLabelStrips(NRect grid, bool scrolled)
+    {
+        var strips = new List<NRect>();
+        double gridBottom = grid.Y + grid.H;
+        if (!scrolled)
+        {
+            const double stripH = 0.028;
+            for (int row = 0; row < 14; row++)
+            {
+                double y = grid.Y + row * ItemBindingBadgeDetector.GridCellHeightNorm - 0.002;
+                if (y >= gridBottom - 0.010) break;
+                double clampedY = Math.Max(0.0, y);
+                double h = Math.Min(stripH, gridBottom - clampedY);
+                if (h >= 0.014)
+                    strips.Add(new NRect { X = grid.X, Y = clampedY, W = grid.W, H = h });
+            }
+        }
+        else
+        {
+            const double stripH = 0.032;
+            const double stride = 0.019;
+            for (double y = grid.Y; y < gridBottom - 0.012; y += stride)
+            {
+                double h = Math.Min(stripH, gridBottom - y);
+                if (h >= 0.016)
+                    strips.Add(new NRect { X = grid.X, Y = y, W = grid.W, H = h });
+            }
+        }
+        return strips;
+    }
+
+    /// <summary>快速跳过无物品的纯色空白行条带（&lt;0.1ms），减少半空扩容箱的无效 OCR 调用。</summary>
+    internal static bool HasStripVisualContent(CapturedFrame frame, NRect strip)
+    {
+        var (left, top, width, height) = PixelMapper.ToPixelRect(strip, frame.Width, frame.Height);
+        if (width < 8 || height < 4) return false;
+        int minLum = 255, maxLum = 0;
+        int stepX = Math.Max(4, width / 60);
+        int stepY = Math.Max(2, height / 8);
+        for (int y = top; y < top + height; y += stepY)
+        {
+            int row = y * frame.Width * 4;
+            for (int x = left; x < left + width; x += stepX)
+            {
+                int o = row + x * 4;
+                int lum = (frame.Bgra[o] + frame.Bgra[o + 1] + frame.Bgra[o + 2]) / 3;
+                if (lum < minLum) minLum = lum;
+                if (lum > maxLum) maxLum = lum;
+            }
+        }
+        return (maxLum - minLum) >= 25;
+    }
+
+    /// <summary>
+    /// 在「请选择要上架的道具」右侧网格按窄行标签条做 2.5x OCR 扫描（空行自动跳过，无词时回退 2.0x），
     /// 输出按「非绑定优先 → 亮格高亮优先 → 匹配分高」排序的候选格子列表、去重页签名与词簇调试样本。
     /// </summary>
     internal async Task<(IReadOnlyList<MarketGridCandidate> Candidates, string PageSignature, int ClusterCount, string SampleLabels)>
-        ScanMarketGridCandidatesFromFrameAsync(CapturedFrame frame, string displayName, string matchName, CancellationToken ct)
+        ScanMarketGridCandidatesFromFrameAsync(CapturedFrame frame, string displayName, string matchName, CancellationToken ct, bool scrolled = false)
     {
         var grid = Screen(AnchorKeys.MarketSell).Roi(AnchorKeys.RoiMarketGridArea);
-        // 3 条略微重叠的水平带，保证 1080p/1440p 下网格小字清晰可读且不切腰跨带漏字。
-        NRect[] bands =
-        [
-            new() { X = grid.X, Y = grid.Y, W = grid.W, H = grid.H * 0.37 },
-            new() { X = grid.X, Y = grid.Y + grid.H * 0.32, W = grid.W, H = grid.H * 0.37 },
-            new() { X = grid.X, Y = grid.Y + grid.H * 0.64, W = grid.W, H = grid.H * 0.36 },
-        ];
+        var strips = BuildMarketGridLabelStrips(grid, scrolled);
 
         int cellW = Math.Max(20, (int)Math.Round(frame.Width * ItemBindingBadgeDetector.GridCellWidthNorm));
         int cellH = Math.Max(20, (int)Math.Round(frame.Height * ItemBindingBadgeDetector.GridCellHeightNorm));
         var rawCandidates = new List<MarketGridCandidate>();
         var sigBuilder = new StringBuilder();
-        var sampleLabels = new List<string>(8);
+        var sampleLabels = new List<string>(10);
         int clusterCount = 0;
 
         void CollectFromDetailed(OcrDetailedReadout detailed, bool recordStats)
@@ -614,7 +668,7 @@ public sealed partial class ScreenProbe
                     {
                         clusterCount++;
                         string clean = Normalize(cluster.Text);
-                        if (clean.Length >= 2 && sampleLabels.Count < 8 && !sampleLabels.Contains(clean))
+                        if (clean.Length >= 2 && sampleLabels.Count < 10 && !sampleLabels.Contains(clean))
                             sampleLabels.Add(clean);
                     }
                     int score = ScoreMarketGridCandidate(cluster.Text, displayName, matchName);
@@ -633,17 +687,17 @@ public sealed partial class ScreenProbe
             }
         }
 
-        foreach (var band in bands)
+        foreach (var strip in strips)
         {
             ct.ThrowIfCancellationRequested();
-            int beforeBand = rawCandidates.Count;
-            var detailed = await _ocr.ReadDetailedAsync(frame, band, 2.0);
+            if (!HasStripVisualContent(frame, strip)) continue;
+            var detailed = await _ocr.ReadDetailedAsync(frame, strip, 2.5);
             CollectFromDetailed(detailed, recordStats: true);
-            if (rawCandidates.Count == beforeBand)
+            if (detailed.Readout.Lines.Count == 0)
             {
                 ct.ThrowIfCancellationRequested();
-                var fallback = await _ocr.ReadDetailedAsync(frame, band, 1.5);
-                CollectFromDetailed(fallback, recordStats: detailed.Readout.Lines.Count == 0);
+                var fallback = await _ocr.ReadDetailedAsync(frame, strip, 2.0);
+                CollectFromDetailed(fallback, recordStats: true);
             }
         }
 

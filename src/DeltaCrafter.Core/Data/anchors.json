@@ -6,8 +6,8 @@
   // safehouse →Tab→ lobby →点顶栏特勤处→ specops-home;
   // 点设施槽位 → production(空闲)或 collect-result(完成)。
   "calibrated": true,
-  "revision": 11,
-  "calibratedOn": "2560×1440 与 16:9 实机标定(rev11:新增交易行出售页与上架物品弹窗锚点)",
+  "revision": 12,
+  "calibratedOn": "2560×1440 与 16:9 实机标定(rev12:精校交易行出售网格首行与上架按钮内部ROI)",
 
   "keywords": {
     "idle": ["空闲中", "空闲"],
@@ -123,7 +123,7 @@
       "rois": {
         "slot-count": { "x": 0.040, "y": 0.125, "w": 0.130, "h": 0.042 },
         "box-strip": { "x": 0.616, "y": 0.165, "w": 0.025, "h": 0.500 },
-        "grid-area": { "x": 0.642, "y": 0.165, "w": 0.308, "h": 0.742 }
+        "grid-area": { "x": 0.642, "y": 0.163, "w": 0.308, "h": 0.744 }
       }
     },
     // △ 上架物品弹窗:点右侧可售格子后直接弹出。

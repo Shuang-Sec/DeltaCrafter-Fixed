@@ -485,6 +485,35 @@ public class MarketSellFlowTests
         Assert.False(ScreenProbe.IsGridRegionUnchanged(f1, f2, grid));
     }
 
+    [Fact]
+    public void BuildMarketGridLabelStrips_covers_all_rows_and_any_scrolled_label_position()
+    {
+        var grid = new NRect { X = 0.642, Y = 0.163, W = 0.308, H = 0.744 };
+        var topStrips = ScreenProbe.BuildMarketGridLabelStrips(grid, scrolled: false);
+        Assert.InRange(topStrips.Count, 12, 13);
+        Assert.All(topStrips, s => Assert.InRange(s.H, 0.014, 0.030));
+
+        // 滚动后任意 y 位置处的 0.013H 高物品标签，都必须完整落在至少一条窄条带内部。
+        var scrolledStrips = ScreenProbe.BuildMarketGridLabelStrips(grid, scrolled: true);
+        for (double labelY = grid.Y; labelY <= grid.Y + grid.H - 0.016; labelY += 0.004)
+        {
+            double labelBottom = labelY + 0.013;
+            Assert.Contains(scrolledStrips, s => s.Y <= labelY + 0.0001 && s.Y + s.H >= labelBottom - 0.0001);
+        }
+    }
+
+    [Fact]
+    public void HasStripVisualContent_skips_flat_empty_rows_and_keeps_labeled_rows()
+    {
+        var flat = CreateSolidFrame(400, 300, 62, 66, 72);
+        var strip = new NRect { X = 0.64, Y = 0.20, W = 0.30, H = 0.03 };
+        Assert.False(ScreenProbe.HasStripVisualContent(flat, strip));
+
+        for (int x = 270; x < 310; x++)
+            SetPixel(flat, x, 64, 210, 210, 210);
+        Assert.True(ScreenProbe.HasStripVisualContent(flat, strip));
+    }
+
     private static AutomationCoordinator CreateMinimalCoordinator(AppSettings settings)
     {
         string tempDir = Path.Combine(Path.GetTempPath(), "dc-market-test-" + Guid.NewGuid().ToString("N"));
