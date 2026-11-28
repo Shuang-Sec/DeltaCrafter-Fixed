@@ -532,6 +532,25 @@ public sealed partial class ScreenProbe
         return best;
     }
 
+    private static readonly Regex ListingBrandNewSuffixPattern =
+        new(@"[\(（]\s*全\s*新\s*(?:[\)）的])?\s*$", RegexOptions.Compiled);
+
+    /// <summary>
+    /// 剥离「△ 上架物品」弹窗中护甲/头盔专属的「（全新）」耐久成色尾缀（兼容实机 OCR 误读「（全新的」）。
+    /// 绝不剥离「磨损」「破损」「几乎全新」等非全新尾缀，确保只匹配特勤处刚造出的满耐久全新装备。
+    /// </summary>
+    internal static string StripListingBrandNewSuffix(string observed) =>
+        ListingBrandNewSuffixPattern.Replace(observed.Trim(), "").Trim();
+
+    internal static bool MatchesListingModalItemName(string observed, string displayName, string matchName)
+    {
+        if (MatchesTargetItemName(observed, displayName, matchName))
+            return true;
+        string stripped = StripListingBrandNewSuffix(observed);
+        return stripped.Length > 0 && stripped != observed.Trim()
+            && MatchesTargetItemName(stripped, displayName, matchName);
+    }
+
     internal async Task<bool> IsListingTitleMatchAsync(CapturedFrame frame, string displayName, string matchName, CancellationToken ct)
     {
         var roi = Screen(AnchorKeys.MarketListing).Roi(AnchorKeys.RoiDetailTitle);
@@ -539,7 +558,7 @@ public sealed partial class ScreenProbe
         {
             ct.ThrowIfCancellationRequested();
             string text = (await _ocr.ReadAsync(frame, roi, scale)).FullText;
-            if (MatchesTargetItemName(text, displayName, matchName))
+            if (MatchesListingModalItemName(text, displayName, matchName))
                 return true;
         }
         return false;

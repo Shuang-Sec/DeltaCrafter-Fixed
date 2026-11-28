@@ -22,6 +22,8 @@ public sealed class FacilityRuntime
     /// <summary>Phase 为 NeedsManual 时的原因(如"材料不足"),用于 UI 与通知。</summary>
     public string? ManualReason { get; set; }
     public DateTimeOffset? ObservedAt { get; set; }
+    /// <summary>最近一次由助手亲手开工确认的物品名（领取完成后清空）；用于跨行情轮换后精准放行助手亲手制造的产物。</summary>
+    public string? LastAssistantCraftedItem { get; set; }
 }
 
 /// <summary>

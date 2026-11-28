@@ -567,6 +567,109 @@ public class MarketSellFlowTests
         Assert.True(ScreenProbe.ComputePageSignatureOverlap(p1, p3) < 0.20);
     }
 
+    [Theory]
+    [InlineData("重型突击背心（全新）", "重型突击背心", true)]
+    [InlineData("重型突击背心（全新的", "重型突击背心", true)]
+    [InlineData("H09防暴头盔(全新)", "H09防暴头盔", true)]
+    [InlineData("重型突击背心（轻微磨损）", "重型突击背心", false)]
+    [InlineData("重型突击背心（破损）", "重型突击背心", false)]
+    [InlineData("泰坦防弹装甲（全新）", "重型突击背心", false)]
+    public void MatchesListingModalItemName_accepts_brand_new_suffix_and_rejects_worn_or_different_armor(
+        string modalTitle, string target, bool expected)
+    {
+        Assert.Equal(expected, ScreenProbe.MatchesListingModalItemName(modalTitle, target, target));
+    }
+
+    [Fact]
+    public void FacilityPlan_RecordRecommendedItem_keeps_latest_5_unique_recommendations_and_snapshot_isolates_it()
+    {
+        var cfg = CraftPlanConfig.CreateDefault();
+        var tech = cfg.For(FacilityKey.TechCenter);
+        tech.Mode = CraftMode.HourlyProfit;
+
+        foreach (var name in new[] { "A1", "A2", "A3", "A4", "A5", "A6", "A4" })
+            tech.RecordRecommendedItem(name);
+
+        // 保留最近 5 条且去重：A4 置顶，最早的 A1 被挤出。
+        Assert.Equal(["A4", "A6", "A5", "A3", "A2"], tech.RecentRecommendedItems);
+
+        var snap = cfg.CreateExecutionSnapshot();
+        tech.RecentRecommendedItems.Clear();
+        Assert.Equal(["A4", "A6", "A5", "A3", "A2"], snap.For(FacilityKey.TechCenter).RecentRecommendedItems);
+    }
+
+    [Fact]
+    public void TryCreateAutoSellRequest_allows_item_A_after_profit_rotated_to_B_within_last_5_rounds()
+    {
+        var plan = new FacilityPlan
+        {
+            Key = FacilityKey.TechCenter,
+            Enabled = true,
+            AutoSell = true,
+            Mode = CraftMode.HourlyProfit,
+            ItemName = "LA-3C绿色激光镭指",
+            MatchName = "LA-3C绿色激光镭指",
+        };
+        plan.RecordRecommendedItem("OLIGHT WARRIOR 3S战术手电");
+        plan.RecordRecommendedItem("XCOG突击3.5倍瞄准镜");
+        plan.RecordRecommendedItem("LA-3C绿色激光镭指");
+
+        // 造的时候推荐 A(手电)，造完时榜单切成了 B(镭指)，因 A 在近 5 轮推荐历史中仍允许安全上架 A！
+        var req = AutomationCoordinator.TryCreateAutoSellRequest(
+            plan, "OLIGHT WARRIOR 3S战术手电", "0凵GHTWARRIOR3S战术手电", lastAssistantCraftedItem: null, out string reason);
+
+        Assert.NotNull(req);
+        Assert.Equal("", reason);
+        Assert.Equal("OLIGHT WARRIOR 3S战术手电", req.DisplayName);
+        Assert.Equal("OLIGHT WARRIOR 3S战术手电", req.ExpectedPresetName);
+
+        // 若用户手动造了既不在当前推荐也不在近 5 轮推荐历史、且非助手亲手开工的贵重品，仍严格拦截保护！
+        var blocked = AutomationCoordinator.TryCreateAutoSellRequest(
+            plan, "AWM狙击步枪", "AWM狙击步枪", lastAssistantCraftedItem: "OLIGHT WARRIOR 3S战术手电", out string blockReason);
+
+        Assert.Null(blocked);
+        Assert.Contains("近 5 轮推荐物品均不一致", blockReason);
+        Assert.Contains("保护留仓", blockReason);
+    }
+
+    [Fact]
+    public void TryCreateAutoSellRequest_allows_assistant_started_item_in_profit_mode_even_after_6_rotations_but_keeps_custom_strict()
+    {
+        var profitPlan = new FacilityPlan
+        {
+            Key = FacilityKey.ArmorStation,
+            Enabled = true,
+            AutoSell = true,
+            Mode = CraftMode.HourlyProfit,
+            ItemName = "精英防弹背心",
+            MatchName = "精英防弹背心",
+        };
+        foreach (var rec in new[] { "R1", "R2", "R3", "R4", "R5" })
+            profitPlan.RecordRecommendedItem(rec);
+
+        // 本轮由助手亲手开工的「重型突击背心」即便超过 5 次行情刷新，因有明确开工记录仍放行。
+        var allowed = AutomationCoordinator.TryCreateAutoSellRequest(
+            profitPlan, "重型突击背心", "重型突击背心", lastAssistantCraftedItem: "重型突击背心", out _);
+        Assert.NotNull(allowed);
+        Assert.Equal("重型突击背心", allowed.DisplayName);
+
+        // 自定义模式下绝不使用历史推荐放行：与当前手选预设不符一律拦截。
+        var customPlan = new FacilityPlan
+        {
+            Key = FacilityKey.ArmorStation,
+            Enabled = true,
+            AutoSell = true,
+            Mode = CraftMode.Custom,
+            ItemName = "H09防暴头盔",
+            MatchName = "H09防暴头盔",
+        };
+        customPlan.RecordRecommendedItem("重型突击背心");
+        var blockedCustom = AutomationCoordinator.TryCreateAutoSellRequest(
+            customPlan, "重型突击背心", "重型突击背心", lastAssistantCraftedItem: "重型突击背心", out string customReason);
+        Assert.Null(blockedCustom);
+        Assert.Contains("不一致", customReason);
+    }
+
     private static AutomationCoordinator CreateMinimalCoordinator(AppSettings settings)
     {
         string tempDir = Path.Combine(Path.GetTempPath(), "dc-market-test-" + Guid.NewGuid().ToString("N"));

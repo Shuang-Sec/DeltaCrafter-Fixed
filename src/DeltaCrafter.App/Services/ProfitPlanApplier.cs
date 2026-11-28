@@ -43,6 +43,9 @@ public sealed class ProfitPlanApplier
                 + (plan.Mode == CraftMode.HourlyProfit ? " / 小时）" : " / 次）"));
             if (plan.ItemName == rec.ItemName)
             {
+                // 首次升级后确保当前推荐物已写入近 5 轮推荐历史白名单。
+                if (plan.RecordRecommendedItem(rec.ItemName))
+                    planDirty = true;
                 // 目录后来收录该物品时补写 OCR 匹配键;解析不出则保留原值,
                 // 不能用空值覆盖一份仍可执行的已知匹配。
                 if (resolved.Length > 0 && plan.MatchName != resolved)
@@ -57,6 +60,10 @@ public sealed class ProfitPlanApplier
                 FacilityKeys.DisplayName(plan.Key),
                 plan.ItemName.Length > 0 ? plan.ItemName : "未选物品",
                 rec.ItemName, metric, rec.Profit);
+            // 切换前先保留上一轮推荐物品到近 5 轮滚动白名单，再压入本轮新推荐。
+            if (!string.IsNullOrWhiteSpace(plan.ItemName))
+                plan.RecordRecommendedItem(plan.ItemName);
+            plan.RecordRecommendedItem(rec.ItemName);
             plan.ItemName = rec.ItemName;
             plan.MatchName = resolved;
             planDirty = true;

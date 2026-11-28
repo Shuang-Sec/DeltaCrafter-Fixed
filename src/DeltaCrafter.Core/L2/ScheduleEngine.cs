@@ -57,7 +57,35 @@ public sealed class ScheduleEngine
                 ReadyAt = f.ReadyAt,
                 ManualReason = f.ManualReason,
                 ObservedAt = f.ObservedAt,
+                LastAssistantCraftedItem = f.LastAssistantCraftedItem,
             }).ToList();
+        }
+    }
+
+    internal void RecordAssistantCraftStarted(FacilityKey key, string itemName)
+    {
+        if (string.IsNullOrWhiteSpace(itemName)) return;
+        lock (_gate)
+        {
+            State.For(key).LastAssistantCraftedItem = itemName.Trim();
+            Save();
+        }
+    }
+
+    internal string? GetLastAssistantCraftedItem(FacilityKey key)
+    {
+        lock (_gate)
+            return State.For(key).LastAssistantCraftedItem;
+    }
+
+    internal void ClearLastAssistantCraftedItem(FacilityKey key)
+    {
+        lock (_gate)
+        {
+            var rt = State.For(key);
+            if (rt.LastAssistantCraftedItem is null) return;
+            rt.LastAssistantCraftedItem = null;
+            Save();
         }
     }
 

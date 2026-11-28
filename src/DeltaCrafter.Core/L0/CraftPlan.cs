@@ -53,6 +53,9 @@ public enum CraftMode
 /// </summary>
 public sealed class FacilityPlan
 {
+    /// <summary>利润模式下每个设施保留的最近推荐物品历史条数上限，用于跨行情轮换后仍允许自动上架刚造出的历史推荐物。</summary>
+    public const int MaxRecentRecommendedItems = 5;
+
     public FacilityKey Key { get; set; }
     public bool Enabled { get; set; }
     /// <summary>全局开启「领取后自动上架交易行」时,是否上架本设施刚领取的非绑定产物。默认开启。</summary>
@@ -62,9 +65,30 @@ public sealed class FacilityPlan
     public string MatchName { get; set; } = "";
     public string CustomItemName { get; set; } = "";
     public string CustomMatchName { get; set; } = "";
+    /// <summary>最近最多 5 轮利润推荐物品历史（最新在前，去重），跨重启保存在 plan.json 中。</summary>
+    public List<string> RecentRecommendedItems { get; set; } = [];
 
     /// <summary>运行期在游戏列表里搜索用的名称。</summary>
     public string SearchName => MatchName.Length > 0 ? MatchName : ItemName;
+
+    /// <summary>将一条利润推荐物品压入最近 5 轮滚动白名单（按配方规范形去重，最新在前）。</summary>
+    public bool RecordRecommendedItem(string itemName)
+    {
+        string trimmed = itemName?.Trim() ?? "";
+        if (trimmed.Length == 0) return false;
+
+        int existingIndex = RecentRecommendedItems.FindIndex(
+            x => TextMatch.MatchesRecipeName(x, trimmed));
+        if (existingIndex == 0 && string.Equals(RecentRecommendedItems[0], trimmed, StringComparison.Ordinal))
+            return false;
+
+        if (existingIndex >= 0)
+            RecentRecommendedItems.RemoveAt(existingIndex);
+        RecentRecommendedItems.Insert(0, trimmed);
+        if (RecentRecommendedItems.Count > MaxRecentRecommendedItems)
+            RecentRecommendedItems.RemoveRange(MaxRecentRecommendedItems, RecentRecommendedItems.Count - MaxRecentRecommendedItems);
+        return true;
+    }
 
     public void SetCustomSelection(string itemName, string matchName)
     {
@@ -133,6 +157,7 @@ public sealed class CraftPlanConfig
             MatchName = f.MatchName,
             CustomItemName = f.CustomItemName,
             CustomMatchName = f.CustomMatchName,
+            RecentRecommendedItems = [.. f.RecentRecommendedItems],
         }).ToList(),
     };
 }

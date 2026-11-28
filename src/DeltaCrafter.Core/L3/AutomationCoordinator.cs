@@ -376,14 +376,17 @@ public sealed partial class AutomationCoordinator : IDisposable
             switch (obs.Phase)
             {
                 case FacilityPhase.ReadyToCollect:
+                    string? assistantCraftedItem = _engine.GetLastAssistantCraftedItem(fp.Key);
                     await CompleteCollectionAsync(fp.Key,
                         () => _collect.CollectAsync(launch.Hwnd, fp.Key, ct), async () =>
                         {
+                            _engine.ClearLastAssistantCraftedItem(fp.Key);
                             string collectedDisplay = DisplayItem(fp.Key, obs.ItemName);
                             report.Add($"{name}已领取「{collectedDisplay}」");
                             if (currentSettings.AutoSellCraftedItems && fp.AutoSell)
                             {
-                                var sellReq = TryCreateAutoSellRequest(fp, collectedDisplay, obs.ItemName, out string protectReason);
+                                var sellReq = TryCreateAutoSellRequest(fp, collectedDisplay, obs.ItemName,
+                                    assistantCraftedItem, out string protectReason);
                                 if (sellReq is not null)
                                     collectedForSale.Add(sellReq);
                                 else if (protectReason.Length > 0)
@@ -456,26 +459,29 @@ public sealed partial class AutomationCoordinator : IDisposable
     }
 
     /// <summary>
-    /// 手动制造贵重物品防误卖红线（纯函数，L3 第一道预设闸门）：
-    /// 仅当设施勾选自动上架、当前制造计划已配置明确预设物品、且刚领取的物品名与预设严格全名一致
-    /// （TextMatch.MatchesRecipeName，保留全部型号/等级后缀差异）时才允许生成上架请求；
-    /// 凡是用户手动制造的其他物品、名称识别为空或与预设不符的产物，一律保护留仓并明确记录原因。
+    /// 手动制造贵重物品防误卖红线（纯函数，L3 第一道预设白名单闸门）：
+    /// - 自定义模式：仅允许上架与当前手选预设（ItemName / SearchName）严格全名一致的产物；
+    /// - 利润推荐模式：允许上架与「当前推荐 ∪ 最近 5 轮推荐历史 ∪ 本轮助手亲手开工物品」任一严格全名一致的产物，
+    ///   解决「开工时推荐 A、制造完成时榜单已切为 B」的场景；凡与上述白名单均不符的产物（如用户手动制造的贵重品）
+    ///   或名称未识别清楚的产物，一律保护留仓拒卖并显式记录原因。
     /// </summary>
     internal static MarketSellRequest? TryCreateAutoSellRequest(
         FacilityPlan plan,
         string collectedDisplay,
         string collectedRaw,
+        out string protectReason) =>
+        TryCreateAutoSellRequest(plan, collectedDisplay, collectedRaw, lastAssistantCraftedItem: null, out protectReason);
+
+    internal static MarketSellRequest? TryCreateAutoSellRequest(
+        FacilityPlan plan,
+        string collectedDisplay,
+        string collectedRaw,
+        string? lastAssistantCraftedItem,
         out string protectReason)
     {
         protectReason = "";
         if (!plan.AutoSell)
             return null;
-
-        if (string.IsNullOrWhiteSpace(plan.ItemName))
-        {
-            protectReason = "未配置制造预设，刚领取物品已保护留仓未上架";
-            return null;
-        }
 
         if (string.IsNullOrWhiteSpace(collectedDisplay) && string.IsNullOrWhiteSpace(collectedRaw))
         {
@@ -483,25 +489,51 @@ public sealed partial class AutomationCoordinator : IDisposable
             return null;
         }
 
-        bool matchesPreset =
-            (!string.IsNullOrWhiteSpace(collectedDisplay) &&
-             ScreenProbe.MatchesTargetItemName(collectedDisplay, plan.ItemName, plan.SearchName)) ||
-            (!string.IsNullOrWhiteSpace(collectedRaw) &&
-             ScreenProbe.MatchesTargetItemName(collectedRaw, plan.ItemName, plan.SearchName));
+        // 构建允许自动上架的白名单条目（DisplayName, MatchName）。
+        var allowedEntries = new List<(string Display, string Match)>();
+        if (!string.IsNullOrWhiteSpace(plan.ItemName))
+            allowedEntries.Add((plan.ItemName, plan.SearchName));
 
-        if (!matchesPreset)
+        if (plan.Mode != CraftMode.Custom)
         {
-            string shown = string.IsNullOrWhiteSpace(collectedDisplay) ? collectedRaw : collectedDisplay;
-            protectReason = $"刚领取的「{shown}」与计划预设「{plan.ItemName}」不一致(疑似手动制造)，已保护留仓绝不上架";
+            if (!string.IsNullOrWhiteSpace(lastAssistantCraftedItem))
+                allowedEntries.Add((lastAssistantCraftedItem.Trim(), lastAssistantCraftedItem.Trim()));
+            foreach (string recent in plan.RecentRecommendedItems.Take(FacilityPlan.MaxRecentRecommendedItems))
+            {
+                if (!string.IsNullOrWhiteSpace(recent))
+                    allowedEntries.Add((recent.Trim(), recent.Trim()));
+            }
+        }
+
+        if (allowedEntries.Count == 0)
+        {
+            protectReason = "未配置制造预设，刚领取物品已保护留仓未上架";
             return null;
         }
 
-        return new MarketSellRequest(
-            plan.Key,
-            plan.ItemName,
-            plan.SearchName,
-            ExpectedPresetName: plan.ItemName,
-            ExpectedPresetMatchName: plan.SearchName);
+        foreach (var (display, match) in allowedEntries)
+        {
+            bool matched =
+                (!string.IsNullOrWhiteSpace(collectedDisplay) &&
+                 ScreenProbe.MatchesTargetItemName(collectedDisplay, display, match)) ||
+                (!string.IsNullOrWhiteSpace(collectedRaw) &&
+                 ScreenProbe.MatchesTargetItemName(collectedRaw, display, match));
+            if (matched)
+            {
+                return new MarketSellRequest(
+                    plan.Key,
+                    display,
+                    match,
+                    ExpectedPresetName: display,
+                    ExpectedPresetMatchName: match);
+            }
+        }
+
+        string shown = string.IsNullOrWhiteSpace(collectedDisplay) ? collectedRaw : collectedDisplay;
+        protectReason = plan.Mode == CraftMode.Custom
+            ? $"刚领取的「{shown}」与计划预设「{plan.ItemName}」不一致(疑似手动制造)，已保护留仓绝不上架"
+            : $"刚领取的「{shown}」与当前及近 {FacilityPlan.MaxRecentRecommendedItems} 轮推荐物品均不一致(疑似手动制造)，已保护留仓绝不上架";
+        return null;
     }
 
     /// <summary>
@@ -586,6 +618,7 @@ public sealed partial class AutomationCoordinator : IDisposable
         string item = plan.ItemName;
         return remaining =>
         {
+            _engine.RecordAssistantCraftStarted(key, item);
             _engine.RecordObservation(key, FacilityPhase.Crafting, item,
                 remaining is { } r ? _clock.Now + r : null,
                 remaining is null ? "已确认开工，剩余时间待核对" : null);

@@ -301,15 +301,21 @@ public sealed class MarketSellFlow
                 var (clusters, pageSig, sampleLabels) = await _probe.ExtractMarketGridClustersFromFrameAsync(
                     scanFrame, ct, scrolled: page > 0);
 
-                // 闪光收藏品箱（纯金打火机/大红等）动画可能超过 5% 像素变化：结合滚动条未动 + 高文本重合度兜底停翻。
-                if (previousFrame is not null &&
-                    ScreenProbe.IsGridScrollbarUnchanged(previousFrame, scanFrame, gridArea) &&
-                    ScreenProbe.ComputePageSignatureOverlap(previousSig, pageSig) >= 0.85)
+                // 闪光收藏品箱（纯金打火机/大红等）动画可能超过 5% 像素变化，或点击右侧暗格轻微扰动滚动条边缘：
+                // 结合滚动条未动 + 高文本重合度(>=0.85)，以及扩容箱连续两页极高文本重合度(>=0.92)兜底停翻。
+                double sigOverlap = previousFrame is not null
+                    ? ScreenProbe.ComputePageSignatureOverlap(previousSig, pageSig)
+                    : 0;
+                bool stagnantByText = previousFrame is not null &&
+                    ((ScreenProbe.IsGridScrollbarUnchanged(previousFrame, scanFrame, gridArea) && sigOverlap >= 0.85) ||
+                     (tab.Index > 0 && page >= 2 && sigOverlap >= 0.92));
+                if (stagnantByText)
                 {
                     stagnantScrolls++;
                     if (stagnantScrolls >= requiredStagnantScrolls)
                     {
-                        _log.Debug("容器#{Box} 第{Page}页滚动条未移动且文本重合度高，确认已到达底部。", tab.Index, page + 1);
+                        _log.Debug("容器#{Box} 第{Page}页文本重合度({Overlap:P0})且滚动停滞，确认已到达底部。",
+                            tab.Index, page + 1, sigOverlap);
                         break;
                     }
                     _probe.ScrollRoi(hwnd, gridArea, ScrollNotchesPerPage - 2);
