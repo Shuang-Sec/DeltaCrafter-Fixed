@@ -249,15 +249,26 @@ public sealed partial class ScreenProbe
         return null;
     }
 
-    /// <summary>检测两个帧在网格区域内的像素是否几乎无变化，用于判断滚动已触底或当前箱子无需滚动。</summary>
+    /// <summary>
+    /// 检测两个帧在网格+滚动条区域内的像素是否几乎无变化，用于判断滚动已触底或当前箱子无需滚动。
+    /// 阈值设为 5%（单格悬停高亮或大红收藏品闪光仅变动 1%–3%，而真实滚动 -10 档通常变动 60%–95%），
+    /// 并向右延伸覆盖滚动条区域，确保即便连续多行相同物品也能凭滚动条位置准确感知是否仍在下翻。
+    /// </summary>
     internal static bool IsGridRegionUnchanged(CapturedFrame previous, CapturedFrame current, NRect gridRoi)
     {
         if (previous.Width != current.Width || previous.Height != current.Height || previous.Width <= 0)
             return false;
-        var (left, top, width, height) = PixelMapper.ToPixelRect(gridRoi, current.Width, current.Height);
+        var expanded = new NRect
+        {
+            X = gridRoi.X,
+            Y = gridRoi.Y,
+            W = Math.Min(1.0 - gridRoi.X, gridRoi.W + 0.014),
+            H = gridRoi.H,
+        };
+        var (left, top, width, height) = PixelMapper.ToPixelRect(expanded, current.Width, current.Height);
         if (width < 8 || height < 8) return false;
-        int stepX = Math.Max(4, width / 40);
-        int stepY = Math.Max(4, height / 40);
+        int stepX = Math.Max(4, width / 45);
+        int stepY = Math.Max(4, height / 45);
         int changed = 0, total = 0;
         for (int y = top; y < top + height; y += stepY)
         {
@@ -268,11 +279,11 @@ public sealed partial class ScreenProbe
                 int diff = Math.Abs(previous.Bgra[o] - current.Bgra[o])
                          + Math.Abs(previous.Bgra[o + 1] - current.Bgra[o + 1])
                          + Math.Abs(previous.Bgra[o + 2] - current.Bgra[o + 2]);
-                if (diff >= 24) changed++;
+                if (diff >= 32) changed++;
                 total++;
             }
         }
-        return total > 0 && (double)changed / total < 0.015;
+        return total > 0 && (double)changed / total < 0.05;
     }
 
     /// <summary>解析「出售数量: 60/90」与「使用售位: 1/8」。</summary>

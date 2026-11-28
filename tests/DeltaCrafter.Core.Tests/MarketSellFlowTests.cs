@@ -527,6 +527,15 @@ public class MarketSellFlowTests
         Assert.True(inner.X > roi.X && inner.X + inner.W < roi.X + roi.W);
     }
 
+    [Fact]
+    public void Main_warehouse_allows_deep_scroll_pages_and_expansion_box_has_bounded_pages()
+    {
+        Assert.True(MarketSellFlow.MaxScrollPagesForContainer(0) >= 20);
+        Assert.True(MarketSellFlow.MaxScrollPagesForContainer(1) >= 10);
+        Assert.True(MarketSellFlow.MaxScrollPagesForContainer(0) > MarketSellFlow.MaxScrollPagesForContainer(1));
+        Assert.True(MarketSellFlow.ScrollNotchesPerPage <= -8);
+    }
+
     private static AutomationCoordinator CreateMinimalCoordinator(AppSettings settings)
     {
         string tempDir = Path.Combine(Path.GetTempPath(), "dc-market-test-" + Guid.NewGuid().ToString("N"));
