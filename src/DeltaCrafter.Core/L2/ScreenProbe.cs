@@ -1036,6 +1036,60 @@ public sealed partial class ScreenProbe
     internal async Task<IReadOnlyList<OcrLine>> ReadAreaLinesFromFrameAsync(CapturedFrame frame, NRect area, double upscale = 2.0) =>
         (await _ocr.ReadAsync(frame, area, upscale)).Lines;
 
+    /// <summary>
+    /// 剥离右下生产操作按钮上下亮色边框的内部文本区。
+    /// 2026-11-28 实机 2560×1440 证实：购买补齐后按钮变为暗绿底亮绿框「生产」，
+    /// 原 ROI(y=0.85..0.912) 包含上下亮绿边框(y=0.854/0.907)导致 Windows OCR 在 1x/1.5x/2x 均读空，
+    /// 裁去外框后的内部区域在 1.5x/2x/3x 均稳定读出「生产」。
+    /// </summary>
+    internal static NRect InnerActionButtonRoi(NRect roi) => new()
+    {
+        X = roi.X + roi.W * 0.04,
+        Y = roi.Y + roi.H * 0.16,
+        W = roi.W * 0.92,
+        H = roi.H * 0.66,
+    };
+
+    /// <summary>同帧多区域多倍率读取生产页右下操作按钮（生产/一键补齐/中止/领取/等级解锁），供开工、中止、领取共用。</summary>
+    internal async Task<string> ReadActionButtonLabelFromFrameAsync(
+        CapturedFrame frame,
+        NRect actionRoi,
+        Func<string, bool> isRecognized,
+        CancellationToken ct = default)
+    {
+        var innerRoi = InnerActionButtonRoi(actionRoi);
+        string bestFallback = "";
+        foreach (var (roi, inner, scale) in new (NRect Roi, bool Inner, double Scale)[]
+        {
+            (actionRoi, false, 2.0),
+            (innerRoi, true, 2.0),
+            (actionRoi, false, 1.0),
+            (actionRoi, false, 1.5),
+            (innerRoi, true, 1.5),
+            (innerRoi, true, 3.0),
+            (actionRoi, false, 3.0),
+        })
+        {
+            ct.ThrowIfCancellationRequested();
+            string label = Normalize((await _ocr.ReadAsync(frame, roi, scale)).FullText);
+            if (isRecognized(label))
+            {
+                _log.Debug("操作按钮({Region},{Scale:0.#}x):{Label}", inner ? "去边框" : "原区域", scale, label);
+                return label;
+            }
+            if (label.Length > bestFallback.Length) bestFallback = label;
+            _log.Debug("操作按钮({Region},{Scale:0.#}x)未识别:{Label}", inner ? "去边框" : "原区域", scale, label);
+        }
+        return bestFallback;
+    }
+
+    internal Task<string> ReadActionButtonLabelAsync(
+        nint hwnd,
+        NRect actionRoi,
+        Func<string, bool> isRecognized,
+        CancellationToken ct = default) =>
+        ReadActionButtonLabelFromFrameAsync(Capture(hwnd), actionRoi, isRecognized, ct);
+
     /// <summary>判定一键补齐清单内是否出现「前去兑换」条目（交易行无法直接购买）。</summary>
     internal static bool IsExchangeRequiredReplenishText(string text)
     {

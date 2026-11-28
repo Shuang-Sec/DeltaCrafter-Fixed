@@ -376,26 +376,14 @@ public sealed class CraftStartFlow
             $"15s 内未识别到购买结果。诊断截图:{png}", png, dumpText);
     }
 
-    private async Task<string> ReadLabelOnceAsync(nint hwnd, ScreenSpec prodSpec)
+    private Task<string> ReadLabelOnceAsync(nint hwnd, ScreenSpec prodSpec)
     {
-        string label = "";
         var keywords = _probe.Anchors.Keywords;
-        foreach (double scale in new[] { 2.0, 1.0, 1.5 })
-        {
-            var texts = await _probe.ReadRoisAsync(hwnd,
-                [prodSpec.Roi(AnchorKeys.RoiActionButton)], scale);
-            label = ScreenProbe.Normalize(texts[0]);
-            if (LabelHits(label, keywords.ButtonProduce) ||
-                IsReplenishLabel(label, keywords.ButtonReplenish) ||
-                LabelHits(label, keywords.ButtonAbort) ||
-                IsLockedRecipeLabel(label))
-            {
-                _log.Debug("操作按钮({Scale}x):{Label}", scale, label);
-                return label;
-            }
-            _log.Debug("操作按钮({Scale}x)未识别:{Label}", scale, label);
-        }
-        return label;
+        return _probe.ReadActionButtonLabelAsync(hwnd, prodSpec.Roi(AnchorKeys.RoiActionButton), label =>
+            LabelHits(label, keywords.ButtonProduce) ||
+            IsReplenishLabel(label, keywords.ButtonReplenish) ||
+            LabelHits(label, keywords.ButtonAbort) ||
+            IsLockedRecipeLabel(label));
     }
 
     /// <summary>一键补齐按钮判定：除配置关键词外，兼容实测 2x 高频 OCR 误读「一卜齐」「一健补齐」「一补齐」。</summary>

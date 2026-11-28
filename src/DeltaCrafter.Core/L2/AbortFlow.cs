@@ -108,18 +108,11 @@ public sealed class AbortFlow
         return "";
     }
 
-    private async Task<string> ReadLabelOnceAsync(nint hwnd, ScreenSpec prodSpec)
+    private Task<string> ReadLabelOnceAsync(nint hwnd, ScreenSpec prodSpec)
     {
-        string label = "";
         var keywords = _probe.Anchors.Keywords;
-        foreach (double scale in new[] { 2.0, 1.0, 1.5 })
-        {
-            var texts = await _probe.ReadRoisAsync(hwnd, [prodSpec.Roi(AnchorKeys.RoiActionButton)], scale);
-            label = ScreenProbe.Normalize(texts[0]);
-            if (LabelHits(label, keywords.ButtonAbort) || IsConfirmedIdleLabel(label))
-                return label;
-        }
-        return label;
+        return _probe.ReadActionButtonLabelAsync(hwnd, prodSpec.Roi(AnchorKeys.RoiActionButton), label =>
+            LabelHits(label, keywords.ButtonAbort) || IsConfirmedIdleLabel(label));
     }
 
     private static bool LabelHits(string normalizedLabel, IEnumerable<string> keywords) =>

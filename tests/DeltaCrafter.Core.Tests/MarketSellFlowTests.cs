@@ -514,6 +514,19 @@ public class MarketSellFlowTests
         Assert.True(ScreenProbe.HasStripVisualContent(flat, strip));
     }
 
+    [Fact]
+    public void InnerActionButtonRoi_insets_past_green_button_border_while_preserving_center()
+    {
+        var roi = new NRect { X = 0.82, Y = 0.85, W = 0.15, H = 0.062 };
+        var inner = ScreenProbe.InnerActionButtonRoi(roi);
+
+        // 2560×1440 实测亮绿边框位于 y=0.854 与 y=0.907，去边框内部 ROI 必须严格落入其内并覆盖文字中心 y≈0.880。
+        Assert.True(inner.Y > 0.855);
+        Assert.True(inner.Y + inner.H < 0.906);
+        Assert.True(inner.Y < 0.880 && inner.Y + inner.H > 0.880);
+        Assert.True(inner.X > roi.X && inner.X + inner.W < roi.X + roi.W);
+    }
+
     private static AutomationCoordinator CreateMinimalCoordinator(AppSettings settings)
     {
         string tempDir = Path.Combine(Path.GetTempPath(), "dc-market-test-" + Guid.NewGuid().ToString("N"));

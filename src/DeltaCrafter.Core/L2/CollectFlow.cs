@@ -371,7 +371,15 @@ public sealed class CollectFlow
             // 防止总览误判可领取时把仍制造中的「中止」当成领取点击。
             await ClickCollectOnceAsync(
                 () => _probe.IsOnAsync(hwnd, AnchorKeys.Production),
-                () => _probe.ReadRoiAsync(hwnd, _probe.Screen(AnchorKeys.Production).Roi(AnchorKeys.RoiActionButton)),
+                () => _probe.ReadActionButtonLabelAsync(hwnd,
+                    _probe.Screen(AnchorKeys.Production).Roi(AnchorKeys.RoiActionButton),
+                    label =>
+                    {
+                        var kw = _probe.Anchors.Keywords;
+                        return kw.ButtonCollect.Concat(kw.ButtonAbort).Concat(kw.ButtonProduce).Concat(kw.ButtonReplenish)
+                            .Select(ScreenProbe.Normalize)
+                            .Any(k => k.Length > 0 && label.Contains(k, StringComparison.Ordinal));
+                    }, ct),
                 _probe.Anchors.Keywords,
                 () => _probe.ClickPoint(hwnd, AnchorKeys.Production, AnchorKeys.PointActionButton),
                 async reason =>
