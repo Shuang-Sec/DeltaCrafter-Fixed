@@ -987,6 +987,20 @@ public sealed partial class ScreenProbe
         _input.ClickAt(x, y);
     }
 
+    /// <summary>先移至按钮外中转点再移入目标点悬停点击（不点击中转点），避免弹窗在原光标下弹出吞掉悬停/点击。</summary>
+    internal void ClickPointWithFreshHover(nint hwnd, string screenName, string pointName, NPoint neutralPoint)
+    {
+        var rect = FocusedClientRect(hwnd);
+        var p = Screen(screenName).Point(pointName);
+        var (x, y) = PixelMapper.ToPixel(p, rect.Left, rect.Top, rect.Width, rect.Height);
+        var (nx, ny) = PixelMapper.ToPixel(neutralPoint, rect.Left, rect.Top, rect.Width, rect.Height);
+        _log.Debug("移出再悬停点击 {Screen}.{Point} → 中转({NX},{NY}) → 屏幕({X},{Y})",
+            screenName, pointName, nx, ny, x, y);
+        RequireFocusedTarget(() => _window.IsForeground(hwnd));
+        InvalidateRestartSceneForInput();
+        _input.ClickAtWithHover(x, y, nx, ny);
+    }
+
     /// <summary>点击帧内像素坐标(OCR 定位到的行中心)。</summary>
     public void ClickFramePoint(nint hwnd, double frameX, double frameY) =>
         ClickFramePointCore(hwnd, frameX, frameY, reconnectConfirmation: false);

@@ -59,6 +59,10 @@ public sealed class MarketSellFlow
     internal const int MaxScrollPagesMainWarehouse = 25;
     internal const int MaxScrollPagesExpansionBox = 12;
     internal const int ScrollNotchesPerPage = -10;
+    /// <summary>「△ 上架物品」弹窗刚打开后等待动画、价格加载与防误触冷却就绪的稳定时长（毫秒）。</summary>
+    internal const int ListingModalSettleMs = 850;
+    /// <summary>弹窗底部空白背景中转点（位于弹窗下沿 0.745 下方、Esc 返回 0.873 上方），仅移入不点击，用于强制触发「上架」按钮的新悬停态。</summary>
+    internal static readonly NPoint ListingHoverNeutralPoint = new() { X = 0.684, Y = 0.785 };
     private const int MaxCandidatesPerPage = 6;
     private readonly ScreenProbe _probe;
     private readonly InputBrick _input;
@@ -459,6 +463,13 @@ public sealed class MarketSellFlow
     /// - 若命中售位满/安全红线，ESC 关窗并返回显式跳过结果；
     /// - 若全名与安全检查通过，dryRun 则 ESC 汇报，正式模式则按配置降价并单次点击上架。
     /// </summary>
+    internal enum ListingAttemptOutcome
+    {
+        Confirmed,
+        PreCheckFailed,
+        ClickedButNotClosed,
+    }
+
     private async Task<MarketSellItemOutcome?> HandleOpenedListingModalAsync(
         nint hwnd,
         CapturedFrame openedFrame,
@@ -468,8 +479,12 @@ public sealed class MarketSellFlow
         int containerIndex,
         CancellationToken ct)
     {
-        var snapshot = await _probe.ReadListingModalFromFrameAsync(openedFrame, ct);
-        bool titleMatched = await IsModalTitleAllowedForRequestAsync(openedFrame, req, ct);
+        // 等待弹窗入场动画、实时行情与防误触冷却完全就绪后再重新截帧核验与操作；
+        // 2026-11-28 18:47 实机日志证实：刚点开弹窗 <1s 且光标压在按钮内直接点击「上架」可能被游戏忽略。
+        await Task.Delay(dryRun ? 300 : ListingModalSettleMs, ct);
+        var settledFrame = _probe.Capture(hwnd);
+        var snapshot = await _probe.ReadListingModalFromFrameAsync(settledFrame, ct);
+        bool titleMatched = await IsModalTitleAllowedForRequestAsync(settledFrame, req, ct);
         _log.Debug("已打开「△ 上架物品」核验: 标题=「{Title}」, 匹配={Match}, 安全={Safe}, 数量={Qty}/{Total}, 售位={WillUse}/{Avail}, 价格={Price}, 收入={Income}, 按钮=「{Btn}」, 拒绝={Reject}",
             ScreenProbe.Normalize(snapshot.ItemTitle), titleMatched, snapshot.IsSafe,
             snapshot.SellQuantity, snapshot.TotalQuantity, snapshot.SlotsWillUse, snapshot.SlotsAvailable,
@@ -517,8 +532,8 @@ public sealed class MarketSellFlow
             await Task.Delay(200, ct);
         }
 
-        // 上架前最后一次同帧安全复核 + 单次不可重复点击事务。
-        bool confirmed = await ConfirmListingOnceAsync(
+        // 上架前最后一次同帧安全复核 + 移出再悬停的单次不可重复点击事务。
+        var attempt = await ExecuteSingleListAttemptAsync(
             async () =>
             {
                 var preClickFrame = _probe.Capture(hwnd);
@@ -526,15 +541,32 @@ public sealed class MarketSellFlow
                 bool preTitleOk = await IsModalTitleAllowedForRequestAsync(preClickFrame, req, ct);
                 return preSnap.IsSafe && preTitleOk;
             },
-            () => _probe.ClickPoint(hwnd, AnchorKeys.MarketListing, AnchorKeys.PointConfirmList),
+            () => _probe.ClickPointWithFreshHover(
+                hwnd, AnchorKeys.MarketListing, AnchorKeys.PointConfirmList, ListingHoverNeutralPoint),
             () => WaitForListingModalClosedAsync(hwnd, 6_000, ct),
             ct);
 
-        if (!confirmed)
+        if (attempt == ListingAttemptOutcome.PreCheckFailed)
         {
             await DismissListingModalAsync(hwnd, ct);
             return new MarketSellItemOutcome(req, MarketSellStatus.SkippedSafetyGuard,
-                "上架前二次校验未通过或上架后弹窗未及时关闭，已取消且未重复点击");
+                "上架前二次校验未通过，已取消且未点击上架");
+        }
+
+        if (attempt == ListingAttemptOutcome.ClickedButNotClosed)
+        {
+            // 按 ESC 之前先保存现场截图与弹窗快照，杜绝盲排查。
+            var timeoutFrame = _probe.Capture(hwnd);
+            var postSnap = await _probe.ReadListingModalFromFrameAsync(timeoutFrame, ct);
+            _log.Warning("「{Item}」已点击「上架」但 6s 内弹窗未关闭，现场读数: 标题=「{Title}」, 数量={Qty}/{Total}, 售位={WillUse}/{Avail}, 价格={Price}, 收入={Income}, 按钮=「{Btn}」。",
+                req.DisplayName, ScreenProbe.Normalize(postSnap.ItemTitle),
+                postSnap.SellQuantity, postSnap.TotalQuantity, postSnap.SlotsWillUse, postSnap.SlotsAvailable,
+                ScreenProbe.Normalize(postSnap.PriceText), postSnap.ExpectedIncome,
+                ScreenProbe.Normalize(postSnap.ActionButtonText));
+            await _probe.DumpFrameAsync(timeoutFrame, "market-list-timeout");
+            await DismissListingModalAsync(hwnd, ct);
+            return new MarketSellItemOutcome(req, MarketSellStatus.SkippedSafetyGuard,
+                "已点击「上架」但 6s 内弹窗未关闭(已保存诊断截图)，已按 ESC 取消且未重复点击");
         }
 
         string listedDetail = adjustSteps > 0
@@ -546,9 +578,9 @@ public sealed class MarketSellFlow
 
     /// <summary>
     /// 不可重复单次上架事务（纯逻辑边界，供单元测试直接验证）：
-    /// 仅当点击前复核通过且未取消时发送一次点击，绝不重试二次上架。
+    /// 仅当点击前复核通过且未取消时发送一次点击，绝不重试二次上架，并显式区分「点击前拦截」与「点击后未关闭」。
     /// </summary>
-    internal static async Task<bool> ConfirmListingOnceAsync(
+    internal static async Task<ListingAttemptOutcome> ExecuteSingleListAttemptAsync(
         Func<Task<bool>> verifyBeforeClick,
         Action clickConfirmList,
         Func<Task<bool>> waitClosed,
@@ -556,23 +588,33 @@ public sealed class MarketSellFlow
     {
         ct.ThrowIfCancellationRequested();
         if (!await verifyBeforeClick())
-            return false;
+            return ListingAttemptOutcome.PreCheckFailed;
         ct.ThrowIfCancellationRequested();
         clickConfirmList();
-        return await waitClosed();
+        return await waitClosed()
+            ? ListingAttemptOutcome.Confirmed
+            : ListingAttemptOutcome.ClickedButNotClosed;
     }
+
+    internal static async Task<bool> ConfirmListingOnceAsync(
+        Func<Task<bool>> verifyBeforeClick,
+        Action clickConfirmList,
+        Func<Task<bool>> waitClosed,
+        CancellationToken ct) =>
+        await ExecuteSingleListAttemptAsync(verifyBeforeClick, clickConfirmList, waitClosed, ct)
+            == ListingAttemptOutcome.Confirmed;
 
     private async Task<bool> WaitForListingModalClosedAsync(nint hwnd, int timeoutMs, CancellationToken ct)
     {
         long deadline = Environment.TickCount64 + timeoutMs;
+        var probe = _probe.Screen(AnchorKeys.MarketListing).Probe;
         while (Environment.TickCount64 < deadline)
         {
             ct.ThrowIfCancellationRequested();
-            if (await _probe.IsOnMarketSellAsync(hwnd, ct))
+            var frame = _probe.Capture(hwnd);
+            if (await _probe.IsOnMarketSellFromFrameAsync(frame, ct))
             {
-                // 确认「上架物品」弹窗标题已消失（背景可能部分透出出售页文字）。
-                var frame = _probe.Capture(hwnd);
-                var probe = _probe.Screen(AnchorKeys.MarketListing).Probe;
+                // 同帧确认「上架物品」弹窗标题已消失（背景可能部分透出出售页文字）。
                 string title = (await _probe.ReadAreaLinesFromFrameAsync(frame, probe.Roi, 2.0))
                     .Aggregate("", (acc, line) => acc + line.Text);
                 if (!ScreenProbe.Normalize(title).Contains("上架物品", StringComparison.Ordinal))

@@ -21,6 +21,23 @@ public sealed class InputBrick
         Thread.Sleep(80);
     }
 
+    /// <summary>
+    /// 先将指针移至按钮外的安全中转点，再移入目标按钮充分悬停后按放：
+    /// 当刚点开的弹窗确认按钮与先前点击的仓库格子重叠（如交易行主仓库第 8 行与「上架」按钮重叠）时，
+    /// 强制触发 Unreal Engine UMG 的鼠标移入悬停事件，避免弹窗在静止光标下方弹出导致首次点击被忽略。
+    /// </summary>
+    internal void ClickAtWithHover(int x, int y, int neutralX, int neutralY, int hoverMs = 150, int holdMs = 85)
+    {
+        MoveTo(neutralX, neutralY);
+        Thread.Sleep(80);
+        MoveTo(x, y);
+        Thread.Sleep(hoverMs);
+        Send(Mouse(NativeInputApi.MOUSEEVENTF_LEFTDOWN));
+        Thread.Sleep(holdMs);
+        Send(Mouse(NativeInputApi.MOUSEEVENTF_LEFTUP));
+        Thread.Sleep(100);
+    }
+
     public void MoveTo(int x, int y)
     {
         var (nx, ny) = NormalizeToVirtualDesktop(x, y);

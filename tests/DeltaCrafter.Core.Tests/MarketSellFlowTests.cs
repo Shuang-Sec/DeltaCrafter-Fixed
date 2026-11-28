@@ -670,6 +670,45 @@ public class MarketSellFlowTests
         Assert.Contains("不一致", customReason);
     }
 
+    [Fact]
+    public async Task ExecuteSingleListAttemptAsync_distinguishes_precheck_failed_timeout_and_confirmed_without_double_click()
+    {
+        int clicks = 0;
+        var preFail = await MarketSellFlow.ExecuteSingleListAttemptAsync(
+            () => Task.FromResult(false),
+            () => clicks++,
+            () => Task.FromResult(true),
+            CancellationToken.None);
+        Assert.Equal(MarketSellFlow.ListingAttemptOutcome.PreCheckFailed, preFail);
+        Assert.Equal(0, clicks);
+
+        var timeout = await MarketSellFlow.ExecuteSingleListAttemptAsync(
+            () => Task.FromResult(true),
+            () => clicks++,
+            () => Task.FromResult(false),
+            CancellationToken.None);
+        Assert.Equal(MarketSellFlow.ListingAttemptOutcome.ClickedButNotClosed, timeout);
+        Assert.Equal(1, clicks);
+
+        var ok = await MarketSellFlow.ExecuteSingleListAttemptAsync(
+            () => Task.FromResult(true),
+            () => clicks++,
+            () => Task.FromResult(true),
+            CancellationToken.None);
+        Assert.Equal(MarketSellFlow.ListingAttemptOutcome.Confirmed, ok);
+        Assert.Equal(2, clicks);
+    }
+
+    [Fact]
+    public void Listing_confirm_settle_and_neutral_hover_point_stay_safely_outside_modal_and_esc()
+    {
+        Assert.True(MarketSellFlow.ListingModalSettleMs >= 700);
+        var neutral = MarketSellFlow.ListingHoverNeutralPoint;
+        // 位于弹窗底部(y≈0.745)下方、底部 Esc 返回(y≈0.873)上方，远离「上架」按钮(y≈0.693)。
+        Assert.InRange(neutral.Y, 0.755, 0.830);
+        Assert.InRange(neutral.X, 0.58, 0.78);
+    }
+
     private static AutomationCoordinator CreateMinimalCoordinator(AppSettings settings)
     {
         string tempDir = Path.Combine(Path.GetTempPath(), "dc-market-test-" + Guid.NewGuid().ToString("N"));
