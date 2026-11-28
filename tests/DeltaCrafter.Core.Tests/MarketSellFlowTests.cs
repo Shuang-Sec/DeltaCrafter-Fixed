@@ -536,6 +536,37 @@ public class MarketSellFlowTests
         Assert.True(MarketSellFlow.ScrollNotchesPerPage <= -8);
     }
 
+    [Fact]
+    public void MatchCandidatesFromClusters_matches_multiple_targets_from_single_page_scan()
+    {
+        IReadOnlyList<MarketGridCluster> pageClusters =
+        [
+            new("高级头盔", 1700, 350, 72.0, false),
+            new("重型突击背心", 1750, 620, 88.0, false),
+            new("体能强佬剂", 2380, 660, 58.1, false),
+        ];
+
+        var vestHits = ScreenProbe.MatchCandidatesFromClusters(pageClusters, 2560, 1440, "重型突击背心", "重型突击背心");
+        Assert.Single(vestHits);
+        Assert.Equal("重型突击背心", vestHits[0].LabelText);
+        Assert.Equal(100, vestHits[0].MatchScore);
+
+        var medHits = ScreenProbe.MatchCandidatesFromClusters(pageClusters, 2560, 1440, "体能强化剂", "体能强化剂");
+        Assert.Single(medHits);
+        Assert.Equal("体能强佬剂", medHits[0].LabelText);
+    }
+
+    [Fact]
+    public void ComputePageSignatureOverlap_detects_stagnant_shimmering_box_with_minor_ocr_noise()
+    {
+        string p1 = "金笔纯金打火机纯金打火机纯金打火机军用网络";
+        string p2 = "金笔纯全打火机纯金打火机纯金打火机军用网络";
+        string p3 = "高级头盔重型突击背心特里克MAS2间谍笔";
+
+        Assert.True(ScreenProbe.ComputePageSignatureOverlap(p1, p2) >= 0.85);
+        Assert.True(ScreenProbe.ComputePageSignatureOverlap(p1, p3) < 0.20);
+    }
+
     private static AutomationCoordinator CreateMinimalCoordinator(AppSettings settings)
     {
         string tempDir = Path.Combine(Path.GetTempPath(), "dc-market-test-" + Guid.NewGuid().ToString("N"));

@@ -135,22 +135,10 @@ public sealed class MarketSellFlow
         var outcomes = new List<MarketSellItemOutcome>(preOutcomes);
         int remainingSlots = initialSlots is { } s ? Math.Max(0, s.Max - s.Used) : int.MaxValue;
 
-        foreach (var req in allowedItems)
-        {
-            ct.ThrowIfCancellationRequested();
-            if (!dryRun && remainingSlots <= 0)
-            {
-                outcomes.Add(new MarketSellItemOutcome(req, MarketSellStatus.SkippedSlotsFull, "交易行剩余上架栏位已满"));
-                continue;
-            }
-
-            var outcome = await SellSingleItemAsync(hwnd, req, adjustSteps, dryRun, ct);
-            outcomes.Add(outcome);
-            if (outcome.Status == MarketSellStatus.Listed && remainingSlots < int.MaxValue)
-                remainingSlots--;
-            else if (outcome.Status == MarketSellStatus.SkippedSlotsFull)
-                remainingSlots = 0;
-        }
+        // 单遍多目标跨箱扫描：主仓库 + 扩容箱每个页面只做一次窄行 OCR，同时匹配全部待上架物品，
+        // 避免为多件物品把 7 个容器重复扫 3–4 遍，大幅提速并第一时间命中当前页已有物品。
+        await ScanAndProcessBatchSinglePassAsync(
+            hwnd, initialFrame, allowedItems, adjustSteps, dryRun, remainingSlots, outcomes, ct);
 
         return new MarketSellBatchResult(outcomes, initialSlots);
     }
@@ -247,31 +235,32 @@ public sealed class MarketSellFlow
         return false;
     }
 
-    private async Task<MarketSellItemOutcome> SellSingleItemAsync(
+    private async Task ScanAndProcessBatchSinglePassAsync(
         nint hwnd,
-        MarketSellRequest req,
+        CapturedFrame initialFrame,
+        List<MarketSellRequest> allowedItems,
         int adjustSteps,
         bool dryRun,
+        int remainingSlots,
+        List<MarketSellItemOutcome> outcomes,
         CancellationToken ct)
     {
-        string facilityName = FacilityKeys.DisplayName(req.Facility);
-        var frame = _probe.Capture(hwnd);
-        var tabs = ItemBindingBadgeDetector.DetectEquippedBoxTabs(frame);
+        var tabs = ItemBindingBadgeDetector.DetectEquippedBoxTabs(initialFrame);
         if (tabs.Count == 0)
             tabs = [new MarketBoxTab(0, ItemBindingBadgeDetector.BoxStripCenterXNorm, ItemBindingBadgeDetector.BoxSlot0CenterYNorm, true)];
 
-        // 始终从主仓库(槽位 0)开始，顺序遍历全部已装备扩容箱；切回前显式点击容器标签确保滚动条复位到顶部。
-        var orderedTabs = tabs
-            .OrderBy(t => t.Index)
-            .ToList();
-
-        bool sawBoundCandidate = false;
+        var orderedTabs = tabs.OrderBy(t => t.Index).ToList();
+        var pending = new List<MarketSellRequest>(allowedItems);
+        var sawBound = new HashSet<MarketSellRequest>();
         var gridArea = _probe.Screen(AnchorKeys.MarketSell).Roi(AnchorKeys.RoiMarketGridArea);
+        bool slotsExhausted = false;
 
         foreach (var tab in orderedTabs)
         {
+            if (pending.Count == 0 || (!dryRun && (slotsExhausted || remainingSlots <= 0)))
+                break;
+
             ct.ThrowIfCancellationRequested();
-            // 无论该容器是否已高亮，都点击一次（或先切回顶部）避免上一件物品把主仓库留在页面底部。
             if (!tab.IsHighlighted || tab.Index == 0)
             {
                 _probe.ClickNormalizedPoint(hwnd, new NPoint { X = tab.CenterX, Y = tab.CenterY });
@@ -279,77 +268,136 @@ public sealed class MarketSellFlow
             }
 
             int maxPages = MaxScrollPagesForContainer(tab.Index);
-            // 主仓库要求连续 2 次下滚无变化才判定真正见底（防止偶发丢滚轮事件导致半途停扫）；
-            // 扩容箱单次无变化即判定见底，减少小箱子无效等待。
+            // 主仓库要求连续 2 次下滚无变化（中间补拉 -12 档复核）才判真正见底，确保大仓库扫全；
+            // 扩容箱单次网格/滚动条停滞即判见底，减少闪光大红箱无效空翻。
             int requiredStagnantScrolls = tab.Index == 0 ? 2 : 1;
             int stagnantScrolls = 0;
             CapturedFrame? previousFrame = null;
+            string previousSig = "";
 
             for (int page = 0; page < maxPages; page++)
             {
+                if (pending.Count == 0 || (!dryRun && (slotsExhausted || remainingSlots <= 0)))
+                    break;
+
                 ct.ThrowIfCancellationRequested();
                 var scanFrame = _probe.Capture(hwnd);
-                if (previousFrame is not null)
+                if (previousFrame is not null && ScreenProbe.IsGridRegionUnchanged(previousFrame, scanFrame, gridArea))
                 {
-                    if (ScreenProbe.IsGridRegionUnchanged(previousFrame, scanFrame, gridArea))
+                    stagnantScrolls++;
+                    if (stagnantScrolls >= requiredStagnantScrolls)
                     {
-                        stagnantScrolls++;
-                        if (stagnantScrolls >= requiredStagnantScrolls)
+                        _log.Debug("容器#{Box} 第{Page}页前连续 {Stagnant} 次下滚画面未变化，确认已到达底部。",
+                            tab.Index, page + 1, stagnantScrolls);
+                        break;
+                    }
+                    _log.Debug("容器#{Box} 第{Page}页下滚未见变化，再补拉一次确认是否真正见底({Stagnant}/{Req})。",
+                        tab.Index, page + 1, stagnantScrolls, requiredStagnantScrolls);
+                    _probe.ScrollRoi(hwnd, gridArea, ScrollNotchesPerPage - 2);
+                    await Task.Delay(550, ct);
+                    continue;
+                }
+
+                var (clusters, pageSig, sampleLabels) = await _probe.ExtractMarketGridClustersFromFrameAsync(
+                    scanFrame, ct, scrolled: page > 0);
+
+                // 闪光收藏品箱（纯金打火机/大红等）动画可能超过 5% 像素变化：结合滚动条未动 + 高文本重合度兜底停翻。
+                if (previousFrame is not null &&
+                    ScreenProbe.IsGridScrollbarUnchanged(previousFrame, scanFrame, gridArea) &&
+                    ScreenProbe.ComputePageSignatureOverlap(previousSig, pageSig) >= 0.85)
+                {
+                    stagnantScrolls++;
+                    if (stagnantScrolls >= requiredStagnantScrolls)
+                    {
+                        _log.Debug("容器#{Box} 第{Page}页滚动条未移动且文本重合度高，确认已到达底部。", tab.Index, page + 1);
+                        break;
+                    }
+                    _probe.ScrollRoi(hwnd, gridArea, ScrollNotchesPerPage - 2);
+                    await Task.Delay(550, ct);
+                    continue;
+                }
+
+                stagnantScrolls = 0;
+                previousFrame = scanFrame;
+                previousSig = pageSig;
+
+                _log.Debug("容器#{Box} 第{Page}/{Max}页单遍扫描(待寻 {Pending} 件): 词簇={Clusters}, 样例=[{Samples}]",
+                    tab.Index, page + 1, maxPages, pending.Count, clusters.Count, sampleLabels);
+
+                // 同页逐一匹配所有尚未完成的待上架物品
+                for (int i = 0; i < pending.Count; )
+                {
+                    if (!dryRun && (slotsExhausted || remainingSlots <= 0)) break;
+
+                    var req = pending[i];
+                    var candidates = ScreenProbe.MatchCandidatesFromClusters(
+                        clusters, scanFrame.Width, scanFrame.Height, req.DisplayName, req.MatchName);
+                    if (candidates.Count == 0)
+                    {
+                        i++;
+                        continue;
+                    }
+
+                    MarketSellItemOutcome? resolved = null;
+                    int triedOnPage = 0;
+                    string facilityName = FacilityKeys.DisplayName(req.Facility);
+
+                    foreach (var candidate in candidates)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        if (candidate.HasBoundBadge)
                         {
-                            _log.Debug("容器#{Box} 第{Page}页前连续 {Stagnant} 次下滚画面未变化，确认已到达底部。",
-                                tab.Index, page + 1, stagnantScrolls);
+                            sawBound.Add(req);
+                            _log.Debug("{Facility}「{Item}」跳过带左下角绑定标志的候选格({Label})。",
+                                facilityName, req.DisplayName, candidate.LabelText);
+                            continue;
+                        }
+                        if (triedOnPage >= MaxCandidatesPerPage) break;
+                        triedOnPage++;
+
+                        _log.Debug("{Facility}「{Item}」命中容器#{Box} 第{Page}页候选「{Label}」(分={Score},亮={Bright:0.0})。",
+                            facilityName, req.DisplayName, tab.Index, page + 1, candidate.LabelText,
+                            candidate.MatchScore, candidate.TileHighlightScore);
+
+                        _probe.ClickFramePoint(hwnd, candidate.ClickFrameX, candidate.ClickFrameY);
+
+                        var listingFrame = await WaitForListingModalAsync(hwnd, 1600, ct);
+                        if (listingFrame is null)
+                            continue;
+
+                        var modalOutcome = await HandleOpenedListingModalAsync(
+                            hwnd, listingFrame, req, adjustSteps, dryRun, tab.Index, ct);
+                        if (modalOutcome is not null)
+                        {
+                            resolved = modalOutcome;
                             break;
                         }
-                        _log.Debug("容器#{Box} 第{Page}页下滚未见变化，再补拉一次确认是否真正见底({Stagnant}/{Req})。",
-                            tab.Index, page + 1, stagnantScrolls, requiredStagnantScrolls);
-                        _probe.ScrollRoi(hwnd, gridArea, ScrollNotchesPerPage - 2);
-                        await Task.Delay(550, ct);
-                        continue;
                     }
-                    stagnantScrolls = 0;
+
+                    if (resolved is not null)
+                    {
+                        outcomes.Add(resolved);
+                        pending.RemoveAt(i);
+                        if (resolved.Status == MarketSellStatus.Listed && remainingSlots < int.MaxValue)
+                            remainingSlots--;
+                        else if (resolved.Status == MarketSellStatus.SkippedSlotsFull)
+                            slotsExhausted = true;
+                        // 成功上架后网格元素会减少/前移，重新截帧更新当前页（不跳过同页其它待上架物品）。
+                        if (resolved.Status == MarketSellStatus.Listed && pending.Count > 0)
+                        {
+                            var refreshed = _probe.Capture(hwnd);
+                            (clusters, previousSig, _) = await _probe.ExtractMarketGridClustersFromFrameAsync(
+                                refreshed, ct, scrolled: page > 0);
+                            previousFrame = refreshed;
+                        }
+                    }
+                    else
+                    {
+                        i++;
+                    }
                 }
 
-                var (candidates, _, clusterCount, sampleLabels) = await _probe.ScanMarketGridCandidatesFromFrameAsync(
-                    scanFrame, req.DisplayName, req.MatchName, ct, scrolled: page > 0);
-                _log.Debug("容器#{Box} 第{Page}/{Max}页扫描({Item}): 词簇={Clusters}, 候选={Hits}, 样例=[{Samples}]",
-                    tab.Index, page + 1, maxPages, req.DisplayName, clusterCount, candidates.Count, sampleLabels);
-
-                previousFrame = scanFrame;
-
-                int triedOnPage = 0;
-                foreach (var candidate in candidates)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    if (candidate.HasBoundBadge)
-                    {
-                        sawBoundCandidate = true;
-                        _log.Debug("{Facility}「{Item}」跳过带左下角绑定标志的候选格({Label})。",
-                            facilityName, req.DisplayName, candidate.LabelText);
-                        continue;
-                    }
-                    if (triedOnPage >= MaxCandidatesPerPage) break;
-                    triedOnPage++;
-
-                    _log.Debug("{Facility}「{Item}」尝试容器#{Box} 第{Page}页候选「{Label}」(分={Score},亮={Bright:0.0})。",
-                        facilityName, req.DisplayName, tab.Index, page + 1, candidate.LabelText,
-                        candidate.MatchScore, candidate.TileHighlightScore);
-
-                    _probe.ClickFramePoint(hwnd, candidate.ClickFrameX, candidate.ClickFrameY);
-
-                    var listingFrame = await WaitForListingModalAsync(hwnd, 1600, ct);
-                    if (listingFrame is null)
-                    {
-                        // 引擎对绑定/损毁不可售格子会直接拒弹上架窗，安全忽略继续下一候选。
-                        continue;
-                    }
-
-                    var modalOutcome = await HandleOpenedListingModalAsync(
-                        hwnd, listingFrame, req, adjustSteps, dryRun, tab.Index, ct);
-                    if (modalOutcome is not null)
-                        return modalOutcome;
-                }
-
-                if (page + 1 < maxPages)
+                if (pending.Count > 0 && page + 1 < maxPages && (dryRun || (!slotsExhausted && remainingSlots > 0)))
                 {
                     _probe.ScrollRoi(hwnd, gridArea, ScrollNotchesPerPage);
                     await Task.Delay(550, ct);
@@ -357,15 +405,26 @@ public sealed class MarketSellFlow
             }
         }
 
-        if (sawBoundCandidate)
+        // 收尾尚未命中的剩余请求
+        foreach (var req in pending)
         {
-            _log.Information("{Facility}「{Item}」仅检测到绑定不可售物品，已跳过上架。", facilityName, req.DisplayName);
-            return new MarketSellItemOutcome(req, MarketSellStatus.SkippedBound, "仅检测到绑定不可售物品，已跳过");
+            string facilityName = FacilityKeys.DisplayName(req.Facility);
+            if (!dryRun && (slotsExhausted || remainingSlots <= 0))
+            {
+                outcomes.Add(new MarketSellItemOutcome(req, MarketSellStatus.SkippedSlotsFull, "交易行剩余上架栏位已满"));
+            }
+            else if (sawBound.Contains(req))
+            {
+                _log.Information("{Facility}「{Item}」仅检测到绑定不可售物品，已跳过上架。", facilityName, req.DisplayName);
+                outcomes.Add(new MarketSellItemOutcome(req, MarketSellStatus.SkippedBound, "仅检测到绑定不可售物品，已跳过"));
+            }
+            else
+            {
+                _log.Information("{Facility}「{Item}」在主仓库及 {Count} 个扩容箱中未找到可上架的非绑定物品，已跳过。",
+                    facilityName, req.DisplayName, Math.Max(0, orderedTabs.Count - 1));
+                outcomes.Add(new MarketSellItemOutcome(req, MarketSellStatus.SkippedNotFound, "未找到可上架的非绑定物品，已跳过"));
+            }
         }
-
-        _log.Information("{Facility}「{Item}」在主仓库及 {Count} 个扩容箱中未找到可上架的非绑定物品，已跳过。",
-            facilityName, req.DisplayName, Math.Max(0, orderedTabs.Count - 1));
-        return new MarketSellItemOutcome(req, MarketSellStatus.SkippedNotFound, "未找到可上架的非绑定物品，已跳过");
     }
 
     internal static int MaxScrollPagesForContainer(int containerIndex) =>

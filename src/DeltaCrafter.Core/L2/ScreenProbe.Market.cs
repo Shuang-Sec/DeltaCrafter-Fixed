@@ -14,6 +14,14 @@ internal sealed record MarketGridCandidate(
     double TileHighlightScore,
     bool HasBoundBadge);
 
+/// <summary>网格单页提取出的原始词簇（供单遍扫描同时匹配多个待上架物品，避免重复翻箱与重复 OCR）。</summary>
+internal sealed record MarketGridCluster(
+    string Text,
+    double ClickFrameX,
+    double ClickFrameY,
+    double TileHighlightScore,
+    bool HasBoundBadge);
+
 /// <summary>「△ 上架物品」弹窗的单帧只读核验快照。</summary>
 internal sealed record MarketListingSnapshot(
     bool IsSafe,
@@ -284,6 +292,67 @@ public sealed partial class ScreenProbe
             }
         }
         return total > 0 && (double)changed / total < 0.05;
+    }
+
+    /// <summary>
+    /// 单独检测网格右侧滚动条轨道是否未移动（不受箱内大红/纯金收藏品闪光动画干扰）。
+    /// 当两页文本高度相似且滚动条未移动时，可立即确认已达箱底，避免在闪光箱里重复空翻。
+    /// </summary>
+    internal static bool IsGridScrollbarUnchanged(CapturedFrame previous, CapturedFrame current, NRect gridRoi)
+    {
+        if (previous.Width != current.Width || previous.Height != current.Height || previous.Width <= 0)
+            return false;
+        var track = new NRect
+        {
+            X = Math.Min(0.99, gridRoi.X + gridRoi.W - 0.002),
+            Y = gridRoi.Y,
+            W = Math.Min(0.016, 1.0 - Math.Min(0.99, gridRoi.X + gridRoi.W - 0.002)),
+            H = gridRoi.H,
+        };
+        var (left, top, width, height) = PixelMapper.ToPixelRect(track, current.Width, current.Height);
+        if (width < 2 || height < 16) return false;
+        int changed = 0, total = 0;
+        int stepY = Math.Max(2, height / 60);
+        for (int y = top; y < top + height; y += stepY)
+        {
+            int row = y * current.Width * 4;
+            for (int x = left; x < left + width; x += 2)
+            {
+                int o = row + x * 4;
+                int diff = Math.Abs(previous.Bgra[o] - current.Bgra[o])
+                         + Math.Abs(previous.Bgra[o + 1] - current.Bgra[o + 1])
+                         + Math.Abs(previous.Bgra[o + 2] - current.Bgra[o + 2]);
+                if (diff >= 30) changed++;
+                total++;
+            }
+        }
+        return total > 0 && (double)changed / total < 0.03;
+    }
+
+    /// <summary>两页 OCR 签名重合度（0..1，按词频加权二元组 Dice 系数），容忍重复收藏品中的单字 OCR 噪点。</summary>
+    internal static double ComputePageSignatureOverlap(string prevSig, string curSig)
+    {
+        if (prevSig.Length < 2 || curSig.Length < 2) return 0;
+        if (prevSig == curSig) return 1.0;
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        int prevTotal = prevSig.Length - 1;
+        for (int i = 0; i < prevTotal; i++)
+        {
+            string bg = prevSig.Substring(i, 2);
+            counts[bg] = counts.TryGetValue(bg, out int c) ? c + 1 : 1;
+        }
+        int curTotal = curSig.Length - 1;
+        int shared = 0;
+        for (int i = 0; i < curTotal; i++)
+        {
+            string bg = curSig.Substring(i, 2);
+            if (counts.TryGetValue(bg, out int c) && c > 0)
+            {
+                shared++;
+                counts[bg] = c - 1;
+            }
+        }
+        return (2.0 * shared) / (prevTotal + curTotal);
     }
 
     /// <summary>解析「出售数量: 60/90」与「使用售位: 1/8」。</summary>
@@ -652,38 +721,30 @@ public sealed partial class ScreenProbe
     }
 
     /// <summary>
-    /// 在「请选择要上架的道具」右侧网格按窄行标签条做 2.5x OCR 扫描（空行自动跳过，无词时回退 2.0x），
-    /// 输出按「非绑定优先 → 亮格高亮优先 → 匹配分高」排序的候选格子列表、去重页签名与词簇调试样本。
+    /// 单遍提取「请选择要上架的道具」网格当前页的全部窄行词簇（供多个待上架物品复用同一页 OCR 结果）。
     /// </summary>
-    internal async Task<(IReadOnlyList<MarketGridCandidate> Candidates, string PageSignature, int ClusterCount, string SampleLabels)>
-        ScanMarketGridCandidatesFromFrameAsync(CapturedFrame frame, string displayName, string matchName, CancellationToken ct, bool scrolled = false)
+    internal async Task<(IReadOnlyList<MarketGridCluster> Clusters, string PageSignature, string SampleLabels)>
+        ExtractMarketGridClustersFromFrameAsync(CapturedFrame frame, CancellationToken ct, bool scrolled = false)
     {
         var grid = Screen(AnchorKeys.MarketSell).Roi(AnchorKeys.RoiMarketGridArea);
         var strips = BuildMarketGridLabelStrips(grid, scrolled);
 
         int cellW = Math.Max(20, (int)Math.Round(frame.Width * ItemBindingBadgeDetector.GridCellWidthNorm));
         int cellH = Math.Max(20, (int)Math.Round(frame.Height * ItemBindingBadgeDetector.GridCellHeightNorm));
-        var rawCandidates = new List<MarketGridCandidate>();
+        var clusters = new List<MarketGridCluster>();
         var sigBuilder = new StringBuilder();
         var sampleLabels = new List<string>(10);
-        int clusterCount = 0;
 
-        void CollectFromDetailed(OcrDetailedReadout detailed, bool recordStats)
+        void CollectFromDetailed(OcrDetailedReadout detailed)
         {
-            if (recordStats) sigBuilder.Append(Normalize(detailed.Readout.FullText));
+            sigBuilder.Append(Normalize(detailed.Readout.FullText));
             foreach (var words in detailed.LineWords)
             {
                 foreach (var cluster in SplitLineWordsIntoTileClusters(words, frame.Width))
                 {
-                    if (recordStats)
-                    {
-                        clusterCount++;
-                        string clean = Normalize(cluster.Text);
-                        if (clean.Length >= 2 && sampleLabels.Count < 10 && !sampleLabels.Contains(clean))
-                            sampleLabels.Add(clean);
-                    }
-                    int score = ScoreMarketGridCandidate(cluster.Text, displayName, matchName);
-                    if (score <= 0) continue;
+                    string clean = Normalize(cluster.Text);
+                    if (clean.Length >= 2 && sampleLabels.Count < 10 && !sampleLabels.Contains(clean))
+                        sampleLabels.Add(clean);
 
                     double clickX = (cluster.Left + cluster.Right) / 2.0;
                     double clickY = Math.Min(frame.Height - 4, cluster.Top + cellH * 0.45);
@@ -693,7 +754,7 @@ public sealed partial class ScreenProbe
 
                     bool bound = ItemBindingBadgeDetector.HasBoundBadge(frame, tileLeft, tileTop, tileW, cellH);
                     double bright = ItemBindingBadgeDetector.MeasureTileHighlightScore(frame, tileLeft, tileTop, tileW, cellH);
-                    rawCandidates.Add(new MarketGridCandidate(cluster.Text, score, clickX, clickY, bright, bound));
+                    clusters.Add(new MarketGridCluster(cluster.Text, clickX, clickY, bright, bound));
                 }
             }
         }
@@ -703,16 +764,40 @@ public sealed partial class ScreenProbe
             ct.ThrowIfCancellationRequested();
             if (!HasStripVisualContent(frame, strip)) continue;
             var detailed = await _ocr.ReadDetailedAsync(frame, strip, 2.5);
-            CollectFromDetailed(detailed, recordStats: true);
-            if (detailed.Readout.Lines.Count == 0)
+            if (detailed.Readout.Lines.Count > 0)
+            {
+                CollectFromDetailed(detailed);
+            }
+            else
             {
                 ct.ThrowIfCancellationRequested();
                 var fallback = await _ocr.ReadDetailedAsync(frame, strip, 2.0);
-                CollectFromDetailed(fallback, recordStats: true);
+                CollectFromDetailed(fallback);
             }
         }
 
-        // 重叠带可能扫到同一格子两次：按半格距离去重，保留高分者。
+        return (clusters, sigBuilder.ToString(), string.Join("/", sampleLabels));
+    }
+
+    /// <summary>从已提取的页内词簇中为单个目标物品筛选、排序并去重候选格（纯函数，便于单遍多目标匹配与单元测试）。</summary>
+    internal static IReadOnlyList<MarketGridCandidate> MatchCandidatesFromClusters(
+        IReadOnlyList<MarketGridCluster> clusters,
+        int frameWidth,
+        int frameHeight,
+        string displayName,
+        string matchName)
+    {
+        int cellW = Math.Max(20, (int)Math.Round(frameWidth * ItemBindingBadgeDetector.GridCellWidthNorm));
+        int cellH = Math.Max(20, (int)Math.Round(frameHeight * ItemBindingBadgeDetector.GridCellHeightNorm));
+        var rawCandidates = new List<MarketGridCandidate>();
+
+        foreach (var c in clusters)
+        {
+            int score = ScoreMarketGridCandidate(c.Text, displayName, matchName);
+            if (score <= 0) continue;
+            rawCandidates.Add(new MarketGridCandidate(c.Text, score, c.ClickFrameX, c.ClickFrameY, c.TileHighlightScore, c.HasBoundBadge));
+        }
+
         var deduped = new List<MarketGridCandidate>();
         double mergeRadiusX = cellW * 0.65;
         double mergeRadiusY = cellH * 0.55;
@@ -727,7 +812,15 @@ public sealed partial class ScreenProbe
                 continue;
             deduped.Add(c);
         }
+        return deduped;
+    }
 
-        return (deduped, sigBuilder.ToString(), clusterCount, string.Join("/", sampleLabels));
+    /// <summary>兼容既有单目标调用入口：单页提取词簇并筛选指定目标候选格。</summary>
+    internal async Task<(IReadOnlyList<MarketGridCandidate> Candidates, string PageSignature, int ClusterCount, string SampleLabels)>
+        ScanMarketGridCandidatesFromFrameAsync(CapturedFrame frame, string displayName, string matchName, CancellationToken ct, bool scrolled = false)
+    {
+        var (clusters, sig, samples) = await ExtractMarketGridClustersFromFrameAsync(frame, ct, scrolled);
+        var candidates = MatchCandidatesFromClusters(clusters, frame.Width, frame.Height, displayName, matchName);
+        return (candidates, sig, clusters.Count, samples);
     }
 }

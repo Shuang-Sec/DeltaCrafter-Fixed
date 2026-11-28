@@ -2,7 +2,7 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11%20x64-0078D6?logo=windows)](#环境要求与运行方式)
 [![Framework](https://img.shields.io/badge/.NET-8.0%20%7C%20WinUI%203-512BD4?logo=dotnet)](#源码构建与测试)
-[![Tests](https://img.shields.io/badge/Unit%20Tests-872%20Passed-2EA043)](#源码构建与测试)
+[![Tests](https://img.shields.io/badge/Unit%20Tests-874%20Passed-2EA043)](#源码构建与测试)
 [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
 《三角洲行动》特勤处本地自动制造与调度助手的非官方社区修复维护分支，基于上游 [ixekico/DeltaCrafting](https://github.com/ixekico/DeltaCrafting) `v0.4.0`（固定基线提交 `04b19179fb629bf6803dde1b17fd8857ba516d45`）持续演进。
@@ -30,7 +30,7 @@
 | 渠道 | 版本 / 状态 | 说明 |
 | --- | --- | --- |
 | **GitHub Releases** | `v0.4.0-fix.1`（2026-10-24） | 首个预发布运行包，包含手电匹配键、长标题 ROI 扩展、全角点倒计时与数据目录隔离。 |
-| **`main` 分支源码** | 持续更新（最新同步至 2026-11-28） | 在 `v0.4.0-fix.1` 基础上已完成多轮实机故障驱动的深度优化并新增「领取后自动上架交易行」功能（872 项单元测试通过），尚未重新打包新的 Release ZIP；如需最新能力请按下方[源码构建](#源码构建与测试)本地编译发布。 |
+| **`main` 分支源码** | 持续更新（最新同步至 2026-11-28） | 在 `v0.4.0-fix.1` 基础上已完成多轮实机故障驱动的深度优化并新增「领取后自动上架交易行」功能（874 项单元测试通过），尚未重新打包新的 Release ZIP；如需最新能力请按下方[源码构建](#源码构建与测试)本地编译发布。 |
 
 ---
 
@@ -107,7 +107,7 @@ DeltaCrafter-Fixed/
 │       ├── Controls/ & Design/    # 卡片控件与 Fluent 设计令牌
 │       └── Services/              # 组合根 AppHost、托盘、主题、通知与行情应用服务
 ├── tests/
-│   └── DeltaCrafter.Core.Tests/   # xUnit 核心回归测试套件（872 项用例 + 脱敏样本 Fixtures）
+│   └── DeltaCrafter.Core.Tests/   # xUnit 核心回归测试套件（874 项用例 + 脱敏样本 Fixtures）
 ├── scripts/
 │   ├── build-release.ps1          # 锁定依赖还原、Release 构建、全量测试、自包含打包与 SHA-256 生成
 │   └── Test-ReleasePrivacy.ps1    # 源码（Source）与发布包（Package）双模式隐私脱敏扫描
@@ -158,7 +158,7 @@ dotnet test tests/DeltaCrafter.Core.Tests/DeltaCrafter.Core.Tests.csproj -c Rele
 pwsh -File scripts/build-release.ps1
 ```
 
-脚本会执行源码隐私检查、锁定版本依赖还原、Release/x64 构建、全部 872 项单元测试、自包含 `win-x64` 发布（确定性编译、路径映射到 `/_/`、无 PDB）、发布包隐私检查，最终输出 ZIP 与 `.sha256` 到 `artifacts/`。
+脚本会执行源码隐私检查、锁定版本依赖还原、Release/x64 构建、全部 874 项单元测试、自包含 `win-x64` 发布（确定性编译、路径映射到 `/_/`、无 PDB）、发布包隐私检查，最终输出 ZIP 与 `.sha256` 到 `artifacts/`。
 
 ### 3. 提交与发布前隐私脱敏扫描
 
